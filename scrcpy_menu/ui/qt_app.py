@@ -677,11 +677,6 @@ class ScrcpyMainWindow(QtWidgets.QMainWindow):
         app_ctrl_row = QtWidgets.QHBoxLayout()
         app_ctrl_row.addWidget(self.txt_vd_app, stretch=1)
 
-        btn_switch_app = QtWidgets.QPushButton("🔀 App Switcher")
-        btn_switch_app.setToolTip("Trigger App Switcher / Overview (Alt+Tab) directly on the virtual display")
-        btn_switch_app.clicked.connect(self._on_switch_app_clicked)
-        app_ctrl_row.addWidget(btn_switch_app)
-
         btn_back_app = QtWidgets.QPushButton("⬅️ Back")
         btn_back_app.setToolTip("Send Back key to the active virtual display")
         btn_back_app.clicked.connect(self._on_vd_back_clicked)
@@ -887,26 +882,6 @@ class ScrcpyMainWindow(QtWidgets.QMainWindow):
                 self.lbl_status.setStyleSheet("color: #ef4444; font-weight: bold;")
                 QtWidgets.QMessageBox.critical(self, "Error", f"Failed to stop app: {msg}")
 
-    def _on_switch_app_clicked(self):
-        target_serial = self._get_selected_serial()
-        vd_id = get_virtual_display_id(target_serial)
-        if vd_id is None:
-            QtWidgets.QMessageBox.information(
-                self,
-                "Virtual Display Not Found",
-                "Could not find an active virtual display on the device.\n\n"
-                "Please make sure your virtual display session is running."
-            )
-            return
-
-        succ = send_display_key(["keycombination", "KEYCODE_ALT_LEFT", "KEYCODE_TAB"], vd_id, target_serial)
-        if succ:
-            self.lbl_status.setText("● Triggered App Switcher on Virtual Display")
-            self.lbl_status.setStyleSheet("color: #10b981; font-weight: bold;")
-        else:
-            self.lbl_status.setText("● Failed to send App Switcher key")
-            self.lbl_status.setStyleSheet("color: #ef4444; font-weight: bold;")
-
     def _on_vd_back_clicked(self):
         target_serial = self._get_selected_serial()
         vd_id = get_virtual_display_id(target_serial)
@@ -993,13 +968,16 @@ class ScrcpyMainWindow(QtWidgets.QMainWindow):
         grp_presets = QtWidgets.QGroupBox("Camera Presets")
         presets_layout = QtWidgets.QHBoxLayout(grp_presets)
 
+        btn_cam_lowlag = QtWidgets.QPushButton("⚡ 720p Low Latency / Wi-Fi")
+        btn_cam_lowlag.clicked.connect(lambda: self._apply_cam_preset("1280x720 (720p)", "30", True, "4M"))
         btn_cam30 = QtWidgets.QPushButton("📷 1080p @ 30fps (Anti-Lag)")
-        btn_cam30.clicked.connect(lambda: self._apply_cam_preset("1920x1080", "30", True))
+        btn_cam30.clicked.connect(lambda: self._apply_cam_preset("1920x1080 (1080p)", "30", True, "8M"))
         btn_cam60 = QtWidgets.QPushButton("📷 1080p @ 60fps (Anti-Lag)")
-        btn_cam60.clicked.connect(lambda: self._apply_cam_preset("1920x1080", "60", True))
+        btn_cam60.clicked.connect(lambda: self._apply_cam_preset("1920x1080 (1080p)", "60", True, "12M"))
         btn_cam_std = QtWidgets.QPushButton("📷 1080p Standard (Buffering)")
-        btn_cam_std.clicked.connect(lambda: self._apply_cam_preset("1920x1080", "30", False))
+        btn_cam_std.clicked.connect(lambda: self._apply_cam_preset("1920x1080 (1080p)", "30", False, "8M"))
 
+        presets_layout.addWidget(btn_cam_lowlag)
         presets_layout.addWidget(btn_cam30)
         presets_layout.addWidget(btn_cam60)
         presets_layout.addWidget(btn_cam_std)
@@ -1068,7 +1046,7 @@ class ScrcpyMainWindow(QtWidgets.QMainWindow):
 
         lbl_concurrent_info = QtWidgets.QLabel(
             "💡 Pro-Tip: You can launch this webcam stream concurrently while Screen Mirroring or Virtual Display is active! "
-            "Both video feeds encode and stream simultaneously via separate hardware pipelines."
+            "Over Wi-Fi, running two 1080p streams simultaneously can cause network buffer delay. Use '⚡ 720p Low Latency / Wi-Fi' or USB for near-zero delay."
         )
         lbl_concurrent_info.setWordWrap(True)
         lbl_concurrent_info.setStyleSheet("color: #38bdf8; font-size: 11px;")
@@ -1088,10 +1066,11 @@ class ScrcpyMainWindow(QtWidgets.QMainWindow):
         layout.addWidget(grp_stream)
         layout.addStretch()
 
-    def _apply_cam_preset(self, res: str, fps: str, antilag: bool):
+    def _apply_cam_preset(self, res: str, fps: str, antilag: bool, bitrate: str = "8M"):
         self.cmb_cam_res.setCurrentText(res)
         self.cmb_cam_fps.setCurrentText(fps)
         self.chk_cam_antilag.setChecked(antilag)
+        self.cmb_cam_bitrate.setCurrentText(bitrate)
 
     def _detect_cameras(self):
         target = self._get_selected_serial()
@@ -1540,13 +1519,16 @@ class ScrcpyMainWindow(QtWidgets.QMainWindow):
         if br:
             cmd.append(f"--video-bit-rate={br}")
 
-        if self.chk_cam_antilag.isChecked():
-            cmd.append("--v4l2-buffer=0")
-            cmd.append("--no-audio")
-
         sink = self.cmb_cam_sink.currentText().strip()
-        if sink and self.capabilities.get("has_v4l2_sink", False):
+        has_sink = bool(sink and self.capabilities.get("has_v4l2_sink", False))
+        if has_sink:
             cmd.append(f"--v4l2-sink={sink}")
+
+        if self.chk_cam_antilag.isChecked():
+            cmd.append("--no-audio")
+            cmd.append("--display-buffer=0")
+            if has_sink:
+                cmd.append("--v4l2-buffer=0")
 
         extra = self.txt_cam_extra.text().strip()
         if extra:
