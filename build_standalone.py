@@ -10,10 +10,16 @@ import shutil
 import subprocess
 from pathlib import Path
 
+# Ensure stdout and stderr handle utf-8 safely across Windows code pages
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+if hasattr(sys.stderr, "reconfigure"):
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+
 
 def build():
     print("=" * 60)
-    print(" 📦 Building Scrcpy Control Center Standalone Executable")
+    print(" [*] Building Scrcpy Control Center Standalone Executable")
     print("=" * 60)
 
     repo_dir = Path(__file__).resolve().parent
@@ -80,10 +86,10 @@ def build():
     if res.returncode == 0:
         dist_dir = repo_dir / "dist"
         print("\n" + "=" * 60)
-        print(" 🎉 BUILD SUCCESSFUL!")
+        print(" [+] BUILD SUCCESSFUL!")
         print(f" Executable generated in: {dist_dir}")
         for item in dist_dir.glob("scrcpy-control-center*"):
-            print(f"  👉 {item.name} ({item.stat().st_size / (1024*1024):.1f} MB)")
+            print(f"  -> {item.name} ({item.stat().st_size / (1024*1024):.1f} MB)")
         print("=" * 60)
     else:
         print(f"\n[!] Build failed with exit code {res.returncode}", file=sys.stderr)

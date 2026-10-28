@@ -40,15 +40,14 @@ from ..core.process import ScrcpyProcessManager
 from ..platform_adapters import get_platform_adapter
 
 DARK_STYLESHEET = """
-QMainWindow, QDialog {
+QMainWindow, QDialog, QWidget#central_widget {
     background-color: #121418;
     color: #e2e8f0;
     font-family: 'Segoe UI', 'Ubuntu', 'Helvetica Neue', sans-serif;
     font-size: 13px;
 }
-QWidget {
-    background-color: transparent;
-    color: #e2e8f0;
+QWidget#tab_mirror, QWidget#tab_vd, QWidget#tab_camera, QWidget#tab_shortcuts {
+    background-color: #171a21;
 }
 QTabWidget::pane {
     border: 1px solid #232834;
@@ -75,18 +74,43 @@ QTabBar::tab:hover:!selected {
     color: #cbd5e1;
 }
 QGroupBox {
+    background-color: #1a1e27;
     border: 1px solid #2a3244;
     border-radius: 8px;
     margin-top: 14px;
-    padding-top: 14px;
+    padding: 16px 12px 12px 12px;
     font-weight: 600;
     color: #38bdf8;
 }
 QGroupBox::title {
+    background-color: #1a1e27;
     subcontrol-origin: margin;
     subcontrol-position: top left;
     padding: 0 8px;
     left: 12px;
+}
+QLabel {
+    background-color: transparent;
+    color: #e2e8f0;
+}
+QCheckBox {
+    background-color: transparent;
+    spacing: 8px;
+    color: #cbd5e1;
+}
+QCheckBox:hover {
+    color: #ffffff;
+}
+QCheckBox::indicator {
+    width: 18px;
+    height: 18px;
+    border-radius: 4px;
+    border: 1px solid #38455e;
+    background-color: #121418;
+}
+QCheckBox::indicator:checked {
+    background-color: #0284c7;
+    border-color: #38bdf8;
 }
 QPushButton {
     background-color: #242c3d;
@@ -124,7 +148,7 @@ QPushButton#btn_stop:hover {
     background-color: #b91c1c;
 }
 QLineEdit, QComboBox, QSpinBox {
-    background-color: #1a1e27;
+    background-color: #121418;
     border: 1px solid #2e3648;
     border-radius: 6px;
     padding: 6px 10px;
@@ -135,25 +159,11 @@ QLineEdit:focus, QComboBox:focus, QSpinBox:focus {
     border: 1px solid #38bdf8;
 }
 QComboBox QAbstractItemView {
-    background-color: #1a1e27;
+    background-color: #121418;
     border: 1px solid #2e3648;
     selection-background-color: #242c3d;
     selection-color: #38bdf8;
-}
-QCheckBox {
-    spacing: 8px;
-    color: #cbd5e1;
-}
-QCheckBox::indicator {
-    width: 18px;
-    height: 18px;
-    border-radius: 4px;
-    border: 1px solid #38455e;
-    background-color: #1a1e27;
-}
-QCheckBox::indicator:checked {
-    background-color: #0284c7;
-    border-color: #38bdf8;
+    color: #f8fafc;
 }
 QTextEdit, QPlainTextEdit {
     background-color: #0d0f13;
@@ -218,6 +228,7 @@ class ScrcpyMainWindow(QtWidgets.QMainWindow):
     def _setup_ui(self):
         self.setStyleSheet(DARK_STYLESHEET)
         central = QtWidgets.QWidget()
+        central.setObjectName("central_widget")
         self.setCentralWidget(central)
         main_layout = QtWidgets.QVBoxLayout(central)
         main_layout.setContentsMargins(16, 16, 16, 16)
@@ -268,9 +279,13 @@ class ScrcpyMainWindow(QtWidgets.QMainWindow):
         # ── Tab Widget ──
         self.tabs = QtWidgets.QTabWidget()
         self.tab_mirror = QtWidgets.QWidget()
+        self.tab_mirror.setObjectName("tab_mirror")
         self.tab_vd = QtWidgets.QWidget()
+        self.tab_vd.setObjectName("tab_vd")
         self.tab_camera = QtWidgets.QWidget()
+        self.tab_camera.setObjectName("tab_camera")
         self.tab_shortcuts = QtWidgets.QWidget()
+        self.tab_shortcuts.setObjectName("tab_shortcuts")
 
         self._setup_tab_mirror()
         self._setup_tab_vd()
@@ -1089,8 +1104,31 @@ class ScrcpyMainWindow(QtWidgets.QMainWindow):
 
 
 def run_qt_app() -> int:
-    """Launch Qt Application."""
+    """Launch Qt Application with anti-flickering Wayland & desktop engine."""
+    # Prevent Wayland sub-surface tearing and repainting flicker on Linux
+    if sys.platform.startswith("linux"):
+        if "QT_WAYLAND_DISABLE_WINDOWDECORATION" not in os.environ:
+            os.environ["QT_WAYLAND_DISABLE_WINDOWDECORATION"] = "1"
+
     app = QtWidgets.QApplication(sys.argv)
+    app.setStyle("Fusion")
+
+    # Set dark base palette to prevent any white or transparent flashing on repaint
+    dark_palette = QtGui.QPalette()
+    dark_palette.setColor(QtGui.QPalette.ColorRole.Window, QtGui.QColor("#121418"))
+    dark_palette.setColor(QtGui.QPalette.ColorRole.WindowText, QtGui.QColor("#e2e8f0"))
+    dark_palette.setColor(QtGui.QPalette.ColorRole.Base, QtGui.QColor("#171a21"))
+    dark_palette.setColor(QtGui.QPalette.ColorRole.AlternateBase, QtGui.QColor("#1a1e27"))
+    dark_palette.setColor(QtGui.QPalette.ColorRole.ToolTipBase, QtGui.QColor("#1e2533"))
+    dark_palette.setColor(QtGui.QPalette.ColorRole.ToolTipText, QtGui.QColor("#ffffff"))
+    dark_palette.setColor(QtGui.QPalette.ColorRole.Text, QtGui.QColor("#e2e8f0"))
+    dark_palette.setColor(QtGui.QPalette.ColorRole.Button, QtGui.QColor("#242c3d"))
+    dark_palette.setColor(QtGui.QPalette.ColorRole.ButtonText, QtGui.QColor("#f1f5f9"))
+    dark_palette.setColor(QtGui.QPalette.ColorRole.BrightText, QtGui.QColor("#38bdf8"))
+    dark_palette.setColor(QtGui.QPalette.ColorRole.Highlight, QtGui.QColor("#0284c7"))
+    dark_palette.setColor(QtGui.QPalette.ColorRole.HighlightedText, QtGui.QColor("#ffffff"))
+    app.setPalette(dark_palette)
+
     app.setApplicationName("Scrcpy Control Center")
     app.setOrganizationName("scrcpy-menu")
     window = ScrcpyMainWindow()
