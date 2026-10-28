@@ -279,3 +279,28 @@ def force_stop_app(package_name: str, device_serial: Optional[str] = None) -> Tu
         return False, res.stderr.strip() or f"Exit code {res.returncode}"
     except Exception as e:
         return False, str(e)
+
+
+def get_virtual_display_id(device_serial: Optional[str] = None) -> Optional[int]:
+    """Find the display ID of the active scrcpy/virtual display on device (first non-zero display)."""
+    apps = get_top_apps_by_display(device_serial)
+    for d_id in apps.keys():
+        if d_id != 0:
+            return d_id
+    return None
+
+
+def send_display_key(key_args: List[str], display_id: Optional[int] = None, device_serial: Optional[str] = None) -> bool:
+    """Send an input keyevent or keycombination targeting a specific display ID."""
+    cmd = ["adb"]
+    if device_serial:
+        cmd.extend(["-s", device_serial])
+    cmd.extend(["shell", "input"])
+    if display_id is not None:
+        cmd.extend(["-d", str(display_id)])
+    cmd.extend(key_args)
+    try:
+        res = subprocess.run(cmd, timeout=5, check=False)
+        return res.returncode == 0
+    except Exception:
+        return False

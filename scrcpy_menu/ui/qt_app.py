@@ -29,6 +29,8 @@ from ..core.device import (
     query_installed_packages,
     get_top_apps_by_display,
     force_stop_app,
+    get_virtual_display_id,
+    send_display_key,
 )
 from ..core.desktop_mode import (
     DESKTOP_MODE_FLAGS,
@@ -266,6 +268,7 @@ class ScrcpyMainWindow(QtWidgets.QMainWindow):
 
     log_signal = Signal(str)
     process_exit_signal = Signal(int)
+    cam_process_exit_signal = Signal(int)
 
     def __init__(self):
         super().__init__()
@@ -276,14 +279,18 @@ class ScrcpyMainWindow(QtWidgets.QMainWindow):
 
         self.config = load_config()
         self.proc_manager = ScrcpyProcessManager()
+        self.cam_proc_manager = ScrcpyProcessManager()
         self.platform_adapter = get_platform_adapter()
         self.capabilities = get_scrcpy_version_info()
 
         # Connect log and exit signals to safely update GUI on main thread
         self.log_signal.connect(self._append_log)
         self.process_exit_signal.connect(self._on_process_exited)
+        self.cam_process_exit_signal.connect(self._on_cam_process_exited)
         self.proc_manager.register_log_callback(lambda line: self.log_signal.emit(line))
         self.proc_manager.register_exit_callback(lambda rc: self.process_exit_signal.emit(rc))
+        self.cam_proc_manager.register_log_callback(lambda line: self.log_signal.emit(f"[camera] {line}"))
+        self.cam_proc_manager.register_exit_callback(lambda rc: self.cam_process_exit_signal.emit(rc))
 
         self._setup_ui()
         self._load_saved_preferences()
@@ -669,8 +676,19 @@ class ScrcpyMainWindow(QtWidgets.QMainWindow):
         self.txt_vd_app.setPlaceholderText("Package name (e.g. com.android.chrome) or leave blank")
         app_ctrl_row = QtWidgets.QHBoxLayout()
         app_ctrl_row.addWidget(self.txt_vd_app, stretch=1)
+
+        btn_switch_app = QtWidgets.QPushButton("🔀 App Switcher")
+        btn_switch_app.setToolTip("Trigger App Switcher / Overview (Alt+Tab) directly on the virtual display")
+        btn_switch_app.clicked.connect(self._on_switch_app_clicked)
+        app_ctrl_row.addWidget(btn_switch_app)
+
+        btn_back_app = QtWidgets.QPushButton("⬅️ Back")
+        btn_back_app.setToolTip("Send Back key to the active virtual display")
+        btn_back_app.clicked.connect(self._on_vd_back_clicked)
+        app_ctrl_row.addWidget(btn_back_app)
+
         btn_kill_app = QtWidgets.QPushButton("🛑 Force-Stop App")
-        btn_kill_app.setToolTip("Instantly terminate the top app running on the virtual display (or entered package)")
+        btn_kill_app.setToolTip("Instantly terminate the top app running on the virtual display (without touching your physical phone screen)")
         btn_kill_app.clicked.connect(self._on_kill_active_app_clicked)
         app_ctrl_row.addWidget(btn_kill_app)
         form.addRow("Package Name:", app_ctrl_row)
@@ -869,6 +887,42 @@ class ScrcpyMainWindow(QtWidgets.QMainWindow):
                 self.lbl_status.setStyleSheet("color: #ef4444; font-weight: bold;")
                 QtWidgets.QMessageBox.critical(self, "Error", f"Failed to stop app: {msg}")
 
+    def _on_switch_app_clicked(self):
+        target_serial = self._get_selected_serial()
+        vd_id = get_virtual_display_id(target_serial)
+        if vd_id is None:
+            QtWidgets.QMessageBox.information(
+                self,
+                "Virtual Display Not Found",
+                "Could not find an active virtual display on the device.\n\n"
+                "Please make sure your virtual display session is running."
+            )
+            return
+
+        succ = send_display_key(["keycombination", "KEYCODE_ALT_LEFT", "KEYCODE_TAB"], vd_id, target_serial)
+        if succ:
+            self.lbl_status.setText("● Triggered App Switcher on Virtual Display")
+            self.lbl_status.setStyleSheet("color: #10b981; font-weight: bold;")
+        else:
+            self.lbl_status.setText("● Failed to send App Switcher key")
+            self.lbl_status.setStyleSheet("color: #ef4444; font-weight: bold;")
+
+    def _on_vd_back_clicked(self):
+        target_serial = self._get_selected_serial()
+        vd_id = get_virtual_display_id(target_serial)
+        if vd_id is None:
+            QtWidgets.QMessageBox.information(
+                self,
+                "Virtual Display Not Found",
+                "Could not find an active virtual display on the device."
+            )
+            return
+
+        succ = send_display_key(["keyevent", "KEYCODE_BACK"], vd_id, target_serial)
+        if succ:
+            self.lbl_status.setText("● Sent Back to Virtual Display")
+            self.lbl_status.setStyleSheet("color: #10b981; font-weight: bold;")
+
     def _apply_vd_preset(self, res: str, dpi: str, flex: bool, app: str, force_desktop: bool = True):
         self.cmb_vd_res.setCurrentText(res)
         self.cmb_vd_dpi.setCurrentText(dpi if dpi in ("180", "420") else "180 (Desktop Scale / Max Space)")
@@ -1006,6 +1060,32 @@ class ScrcpyMainWindow(QtWidgets.QMainWindow):
         form.addRow("Extra Scrcpy Flags:", self.txt_cam_extra)
 
         layout.addWidget(grp_cfg)
+
+        # Concurrent Webcam Stream Launcher
+        grp_stream = QtWidgets.QGroupBox("Concurrent Stream Controls")
+        stream_layout = QtWidgets.QVBoxLayout(grp_stream)
+        stream_layout.setSpacing(6)
+
+        lbl_concurrent_info = QtWidgets.QLabel(
+            "💡 Pro-Tip: You can launch this webcam stream concurrently while Screen Mirroring or Virtual Display is active! "
+            "Both video feeds encode and stream simultaneously via separate hardware pipelines."
+        )
+        lbl_concurrent_info.setWordWrap(True)
+        lbl_concurrent_info.setStyleSheet("color: #38bdf8; font-size: 11px;")
+        stream_layout.addWidget(lbl_concurrent_info)
+
+        btn_row = QtWidgets.QHBoxLayout()
+        self.btn_cam_action = QtWidgets.QPushButton("🎥 Launch Webcam (Concurrent)")
+        self.btn_cam_action.setFixedHeight(34)
+        self.btn_cam_action.clicked.connect(self._on_cam_action_clicked)
+        btn_row.addWidget(self.btn_cam_action, stretch=1)
+
+        self.lbl_cam_status = QtWidgets.QLabel("Status: Stopped")
+        self.lbl_cam_status.setStyleSheet("color: #94a3b8; font-weight: bold; padding: 4px;")
+        btn_row.addWidget(self.lbl_cam_status)
+        stream_layout.addLayout(btn_row)
+
+        layout.addWidget(grp_stream)
         layout.addStretch()
 
     def _apply_cam_preset(self, res: str, fps: str, antilag: bool):
@@ -1427,46 +1507,80 @@ class ScrcpyMainWindow(QtWidgets.QMainWindow):
                     print(f"Error parsing extra virtual display flags: {e}", file=sys.stderr)
 
         elif current_idx == 2:
-            # ── Tab 2: Camera / Webcam ──
-            cmd.append("--video-source=camera")
-            raw_cam_res = self.cmb_cam_res.currentText().strip()
-            if raw_cam_res and not raw_cam_res.lower().startswith("native"):
-                first_cam = raw_cam_res.split()[0]
-                if "x" in first_cam:
-                    wh = first_cam.split("x")
-                    if len(wh) == 2 and wh[0].isdigit() and wh[1].isdigit():
-                        cmd.append(f"--camera-size={wh[0]}x{wh[1]}")
-
-            fps = self.cmb_cam_fps.currentText().split()[0]
-            if fps.isdigit() and int(fps) > 0:
-                cmd.append(f"--camera-fps={fps}")
-
-            facing = self.cmb_cam_facing.currentText().strip()
-            if facing in ("front", "back"):
-                cmd.append(f"--camera-facing={facing}")
-            elif facing.isdigit():
-                cmd.append(f"--camera-id={facing}")
-
-            br = self.cmb_cam_bitrate.currentText().strip()
-            if br:
-                cmd.append(f"--video-bit-rate={br}")
-
-            if self.chk_cam_antilag.isChecked():
-                cmd.append("--v4l2-buffer=0")
-                cmd.append("--no-audio")
-
-            sink = self.cmb_cam_sink.currentText().strip()
-            if sink and self.capabilities.get("has_v4l2_sink", False):
-                cmd.append(f"--v4l2-sink={sink}")
-
-            extra = self.txt_cam_extra.text().strip()
-            if extra:
-                try:
-                    cmd.extend(shlex.split(extra))
-                except Exception as e:
-                    print(f"Error parsing extra camera flags: {e}", file=sys.stderr)
+            return self._build_camera_command()
 
         return cmd
+
+    def _build_camera_command(self) -> List[str]:
+        cmd = ["scrcpy"]
+        target = self._get_selected_serial()
+        if target:
+            cmd.append(f"--serial={target}")
+
+        cmd.append("--video-source=camera")
+        raw_cam_res = self.cmb_cam_res.currentText().strip()
+        if raw_cam_res and not raw_cam_res.lower().startswith("native"):
+            first_cam = raw_cam_res.split()[0]
+            if "x" in first_cam:
+                wh = first_cam.split("x")
+                if len(wh) == 2 and wh[0].isdigit() and wh[1].isdigit():
+                    cmd.append(f"--camera-size={wh[0]}x{wh[1]}")
+
+        fps = self.cmb_cam_fps.currentText().split()[0]
+        if fps.isdigit() and int(fps) > 0:
+            cmd.append(f"--camera-fps={fps}")
+
+        facing = self.cmb_cam_facing.currentText().strip()
+        if facing in ("front", "back"):
+            cmd.append(f"--camera-facing={facing}")
+        elif facing.isdigit():
+            cmd.append(f"--camera-id={facing}")
+
+        br = self.cmb_cam_bitrate.currentText().strip()
+        if br:
+            cmd.append(f"--video-bit-rate={br}")
+
+        if self.chk_cam_antilag.isChecked():
+            cmd.append("--v4l2-buffer=0")
+            cmd.append("--no-audio")
+
+        sink = self.cmb_cam_sink.currentText().strip()
+        if sink and self.capabilities.get("has_v4l2_sink", False):
+            cmd.append(f"--v4l2-sink={sink}")
+
+        extra = self.txt_cam_extra.text().strip()
+        if extra:
+            try:
+                cmd.extend(shlex.split(extra))
+            except Exception as e:
+                print(f"Error parsing extra camera flags: {e}", file=sys.stderr)
+
+        return cmd
+
+    def _on_cam_action_clicked(self):
+        if self.cam_proc_manager.is_running():
+            self.cam_proc_manager.stop()
+            self.lbl_cam_status.setText("Status: Stopping...")
+            self.lbl_cam_status.setStyleSheet("color: #eab308; font-weight: bold;")
+        else:
+            cmd = self._build_camera_command()
+            success = self.cam_proc_manager.start(cmd)
+            if success:
+                self.btn_cam_action.setText("⏹ Stop Webcam Stream")
+                self.btn_cam_action.setObjectName("btn_stop")
+                self.btn_cam_action.setStyle(self.btn_cam_action.style())
+                self.lbl_cam_status.setText("Status: 🟢 Streaming")
+                self.lbl_cam_status.setStyleSheet("color: #10b981; font-weight: bold;")
+            else:
+                QtWidgets.QMessageBox.critical(self, "Camera Error", "Could not start webcam stream. Check the live logs for details.")
+
+    @Slot(int)
+    def _on_cam_process_exited(self, return_code: int):
+        self.btn_cam_action.setText("🎥 Launch Webcam (Concurrent)")
+        self.btn_cam_action.setObjectName("")
+        self.btn_cam_action.setStyle(self.btn_cam_action.style())
+        self.lbl_cam_status.setText("Status: Stopped")
+        self.lbl_cam_status.setStyleSheet("color: #94a3b8; font-weight: bold;")
 
     def _on_action_clicked(self):
         if self.proc_manager.is_running():
@@ -1760,6 +1874,8 @@ class ScrcpyMainWindow(QtWidgets.QMainWindow):
         save_config(c)
         if self.proc_manager.is_running():
             self.proc_manager.stop()
+        if self.cam_proc_manager.is_running():
+            self.cam_proc_manager.stop()
         event.accept()
 
 
