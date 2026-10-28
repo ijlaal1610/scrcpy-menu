@@ -531,6 +531,9 @@ class ScrcpyMainWindow(QtWidgets.QMainWindow):
         self.chk_mirror_hid_kb = QtWidgets.QCheckBox("Hardware Keyboard Simulation (--keyboard=uhid) [bypasses on-screen keyboard]")
         adv_form.addRow("", self.chk_mirror_hid_kb)
 
+        self.chk_mirror_prefer_text = QtWidgets.QCheckBox("Prefer Text Events (--prefer-text) [fixes typing lag, dropped keys, and special symbols]")
+        adv_form.addRow("", self.chk_mirror_prefer_text)
+
         self.chk_mirror_hid_mouse = QtWidgets.QCheckBox("Hardware Mouse Capture (--mouse=uhid) [high-precision cursor lock]")
         adv_form.addRow("", self.chk_mirror_hid_mouse)
 
@@ -695,8 +698,11 @@ class ScrcpyMainWindow(QtWidgets.QMainWindow):
         self.chk_vd_audio = QtWidgets.QCheckBox("PC Sound (--audio-source=output) [play virtual display sound through computer]")
         feat_form.addRow("", self.chk_vd_audio)
 
-        self.chk_vd_hid_kb = QtWidgets.QCheckBox("Hardware Keyboard Simulation (--keyboard=uhid)")
+        self.chk_vd_hid_kb = QtWidgets.QCheckBox("Hardware Keyboard Simulation (--keyboard=uhid) [bypasses on-screen keyboard]")
         feat_form.addRow("", self.chk_vd_hid_kb)
+
+        self.chk_vd_prefer_text = QtWidgets.QCheckBox("Prefer Text Events (--prefer-text) [fixes typing lag, dropped keys & symbols]")
+        feat_form.addRow("", self.chk_vd_prefer_text)
 
         self.chk_vd_hid_mouse = QtWidgets.QCheckBox("Hardware Mouse Capture (--mouse=uhid) [recommended for virtual display]")
         self.chk_vd_hid_mouse.setChecked(True)
@@ -705,6 +711,27 @@ class ScrcpyMainWindow(QtWidgets.QMainWindow):
             "Eliminates 'Could not request inject mouse motion event' warnings on Android 14+ / 16."
         )
         feat_form.addRow("", self.chk_vd_hid_mouse)
+
+        self.cmb_vd_ime = QtWidgets.QComboBox()
+        self.cmb_vd_ime.addItems([
+            "Default (Auto)",
+            "Hide On-Screen Keyboard (--display-ime-policy=hide)",
+            "Local Virtual Display (--display-ime-policy=local)",
+        ])
+        feat_form.addRow("On-Screen Keyboard:", self.cmb_vd_ime)
+
+        btn_kb_setup = QtWidgets.QPushButton("⌨️ Configure Device Keyboard Layout")
+        btn_kb_setup.setToolTip("Opens Android's Physical Keyboard Settings screen on phone to select keyboard layout (US, UK, etc.)")
+        btn_kb_setup.clicked.connect(self._open_device_keyboard_settings)
+        feat_form.addRow("Physical Keyboard Setup:", btn_kb_setup)
+
+        lbl_kb_hint = QtWidgets.QLabel(
+            "💡 Keyboard capture: Click inside the scrcpy display window to focus/capture input (or press MOD+i). "
+            "If keys don't type initially, click 'Configure Device Keyboard Layout' to select a physical layout, or enable 'Prefer Text Events'."
+        )
+        lbl_kb_hint.setWordWrap(True)
+        lbl_kb_hint.setStyleSheet("color: #94a3b8; font-size: 11px;")
+        feat_form.addRow("", lbl_kb_hint)
 
         self.chk_vd_record = QtWidgets.QCheckBox("Record Virtual Display session to MP4 (--record)")
         feat_form.addRow("", self.chk_vd_record)
@@ -801,6 +828,26 @@ class ScrcpyMainWindow(QtWidgets.QMainWindow):
         succ, msg = restore_desktop_mode_defaults(target)
         QtWidgets.QMessageBox.information(self, "OEM Defaults Restored", msg)
         self._check_desktop_mode_status()
+
+    def _open_device_keyboard_settings(self):
+        target = self._get_selected_serial()
+        cmd = ["adb"]
+        if target:
+            cmd.extend(["-s", target])
+        cmd.extend(["shell", "am", "start", "-a", "android.settings.HARD_KEYBOARD_SETTINGS"])
+        try:
+            res = subprocess.run(cmd, capture_output=True, text=True, timeout=5, check=False)
+            if res.returncode == 0:
+                self.lbl_status.setText("● Opened Keyboard Settings on phone")
+            else:
+                cmd_fallback = ["adb"]
+                if target:
+                    cmd_fallback.extend(["-s", target])
+                cmd_fallback.extend(["shell", "am", "start", "-a", "android.settings.INPUT_METHOD_SETTINGS"])
+                subprocess.run(cmd_fallback, timeout=5, check=False)
+                self.lbl_status.setText("● Opened Input Settings on phone")
+        except Exception as e:
+            QtWidgets.QMessageBox.warning(self, "Keyboard Settings", f"Could not open device settings: {e}")
 
     def _check_desktop_mode_status(self):
         target = self._get_selected_serial()
@@ -1184,6 +1231,9 @@ class ScrcpyMainWindow(QtWidgets.QMainWindow):
                 if self.chk_mirror_hid_kb.isChecked():
                     cmd.append("--keyboard=uhid")
 
+                if self.chk_mirror_prefer_text.isChecked():
+                    cmd.append("--prefer-text")
+
                 if self.chk_mirror_hid_mouse.isChecked():
                     cmd.append("--mouse=uhid")
 
@@ -1274,6 +1324,15 @@ class ScrcpyMainWindow(QtWidgets.QMainWindow):
 
             if self.chk_vd_hid_kb.isChecked():
                 cmd.append("--keyboard=uhid")
+
+            if self.chk_vd_prefer_text.isChecked():
+                cmd.append("--prefer-text")
+
+            ime_policy = self.cmb_vd_ime.currentText()
+            if "hide" in ime_policy:
+                cmd.append("--display-ime-policy=hide")
+            elif "local" in ime_policy:
+                cmd.append("--display-ime-policy=local")
 
             if self.chk_vd_hid_mouse.isChecked():
                 cmd.append("--mouse=uhid")
@@ -1499,6 +1558,7 @@ class ScrcpyMainWindow(QtWidgets.QMainWindow):
         if self.capabilities.get("has_v4l2_sink", False):
             self.cmb_mirror_sink.setCurrentText(c.get("mirror_sink", "/dev/video0"))
         self.chk_mirror_hid_kb.setChecked(c.get("mirror_hid_keyboard", False))
+        self.chk_mirror_prefer_text.setChecked(c.get("mirror_prefer_text", False))
         self.chk_mirror_hid_mouse.setChecked(c.get("mirror_hid_mouse", False))
         self.chk_mirror_otg.setChecked(c.get("mirror_otg", False))
         self.chk_mirror_record.setChecked(c.get("mirror_record", False))
@@ -1519,6 +1579,8 @@ class ScrcpyMainWindow(QtWidgets.QMainWindow):
         self.chk_vd_screen_off.setChecked(c.get("vd_screen_off", False))
         self.chk_vd_audio.setChecked(c.get("vd_audio", True))
         self.chk_vd_hid_kb.setChecked(c.get("vd_hid_keyboard", False))
+        self.chk_vd_prefer_text.setChecked(c.get("vd_prefer_text", False))
+        self.cmb_vd_ime.setCurrentText(c.get("vd_ime", "Default (Auto)"))
         self.chk_vd_hid_mouse.setChecked(c.get("vd_hid_mouse", True))
         self.chk_vd_record.setChecked(c.get("vd_record", False))
         raw_app = c.get("vd_app", "")
@@ -1561,6 +1623,7 @@ class ScrcpyMainWindow(QtWidgets.QMainWindow):
         if self.capabilities.get("has_v4l2_sink", False):
             c["mirror_sink"] = self.cmb_mirror_sink.currentText()
         c["mirror_hid_keyboard"] = self.chk_mirror_hid_kb.isChecked()
+        c["mirror_prefer_text"] = self.chk_mirror_prefer_text.isChecked()
         c["mirror_hid_mouse"] = self.chk_mirror_hid_mouse.isChecked()
         c["mirror_otg"] = self.chk_mirror_otg.isChecked()
         c["mirror_record"] = self.chk_mirror_record.isChecked()
@@ -1580,6 +1643,8 @@ class ScrcpyMainWindow(QtWidgets.QMainWindow):
         c["vd_screen_off"] = self.chk_vd_screen_off.isChecked()
         c["vd_audio"] = self.chk_vd_audio.isChecked()
         c["vd_hid_keyboard"] = self.chk_vd_hid_kb.isChecked()
+        c["vd_prefer_text"] = self.chk_vd_prefer_text.isChecked()
+        c["vd_ime"] = self.cmb_vd_ime.currentText()
         c["vd_hid_mouse"] = self.chk_vd_hid_mouse.isChecked()
         c["vd_record"] = self.chk_vd_record.isChecked()
         c["vd_app"] = self.txt_vd_app.text().strip()

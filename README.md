@@ -1,8 +1,12 @@
 # 🚀 Scrcpy Control Center
 
-A modern, cross-platform **GUI & CLI Control Center** for [scrcpy](https://github.com/Genymobile/scrcpy) and ADB, supporting **Linux, Windows 10/11, and macOS**.
+[![Version](https://img.shields.io/badge/version-1.0.0-blue.svg)](https://github.com/ijlaal1610/scrcpy-menu)
+[![Platforms](https://img.shields.io/badge/platform-Linux%20%7C%20Windows%20%7C%20macOS-emerald.svg)](https://github.com/ijlaal1610/scrcpy-menu)
+[![License](https://img.shields.io/badge/license-MIT-purple.svg)](LICENSE)
 
-Designed for high-performance mobile screen mirroring, virtual secondary displays, camera/webcam streaming, and Android desktop mode management with zero latency and robust error handling.
+A modern, cross-platform **GUI & CLI Control Center** for [scrcpy](https://github.com/Genymobile/scrcpy) and ADB, built with PySide6 / Qt and supporting **Linux (x86_64 & ARM64), Windows 10/11 (x64 & ARM), and macOS (Apple Silicon & Intel)**.
+
+Designed for high-performance mobile screen mirroring, virtual secondary displays, phone-as-webcam streaming, and Android desktop mode management with zero latency, responsive scrolling, and robust error handling.
 
 > 💡 **Legacy Branch**: The original Linux-only GTK3 implementation is permanently preserved on the [`legacy-gtk`](https://github.com/ijlaal1610/scrcpy-menu/tree/legacy-gtk) branch.
 
@@ -10,76 +14,76 @@ Designed for high-performance mobile screen mirroring, virtual secondary display
 
 ## ✨ Key Capabilities
 
-### 1. 📱 Screen Mirroring (up to 120 FPS Native)
-- **Fluid High Refresh Rate**: Match 90Hz and 120Hz AMOLED mobile displays at native 120 FPS.
+### 1. 📱 High-Performance Screen Mirroring
+- **Fluid Refresh Rates**: Match 90Hz and 120Hz AMOLED mobile displays at native 120 FPS.
+- **Custom Resolutions & Downscaling**: Choose native size, capped 1080p/720p presets, or arbitrary custom resolutions (`WxH`).
+- **Modern Video Codecs**: Select between `Default (H.264)`, `H.265 / HEVC`, or `AV1` for maximum fidelity and low bandwidth.
+- **Orientation Lock**: Lock video feed to 0°, 90° CCW, 180°, or 90° CW.
 - **Audio Forwarding**: Stream device sound directly through computer speakers (`--audio-source=output`).
-- **Power Management**: Turn device physical screen off while keeping mirroring alive (`--turn-screen-off`).
-- **Bitrate & Latency Tuning**: Presets for Ultra Low-Lag, Presentation, and Gaming.
+- **Power & Battery Saver**: Turn physical phone screen completely OFF while maintaining high-frame-rate mirroring (`--turn-screen-off`).
+- **Virtual Webcam Sink**: Stream your phone's mirrored display directly into V4L2 virtual cameras or OBS.
 
 ### 2. 🖥️ Virtual Secondary Display (`--new-display`)
-- **Independent Workspace**: Run mobile apps in a secondary virtual display on your PC monitor while your phone's physical screen remains free.
-- **Flex Display**: Dynamically resize the virtual display window like any native PC app (`--flex-display`).
-- **Sound Control**: Dedicated toggle to stream or mute virtual display audio on PC.
-- **DPI Scaling**: Switch between Phone (420 DPI), Tablet (240 DPI), and Desktop (180 DPI) for high screen density.
-- **App Launcher**: Auto-launch specific applications (`--start-app=...`) on the virtual display.
+- **Independent Workspace**: Run mobile apps in a secondary virtual display on your PC monitor while your phone's physical screen remains free for calls or other apps.
+- **Dynamic Flex Display**: Continuously resize the virtual display window dynamically like any native desktop application (`--flex-display`).
+- **Custom Resolutions & Density**: Set custom resolutions (e.g. `1920x1080`, `2560x1440`, `2400x1080`) and custom DPI scaling (180 Desktop Scale, 240 Tablet, 320 Compact, 420 Phone).
+- **Device App Scanner**: Integrated `🔄 Scan Device Apps` button queries installed third-party packages from your phone over ADB, allowing you to launch any app directly onto the virtual display.
+- **Clean Display Option**: Strip Android system navigation and status bars for borderless fullscreen apps (`--no-vd-system-decorations`).
+- **Session Preservation**: Optional toggle to preserve running apps back to the phone when the virtual display window closes (`--no-vd-destroy-content`).
 
-### 3. ⚙️ Android Desktop Mode & OEM Rollback (ADB)
+### 3. ⌨️ Hardware Input (HID) & Typing Engine
+- **USB HID Keyboard & Mouse Simulation**: Forward physical PC keyboard and mouse input as raw hardware USB HID devices (`--keyboard=uhid`, `--mouse=uhid`), avoiding Android touch-injection latency.
+- **Prefer Text Events Mode (`--prefer-text`)**: Injects characters as direct text events, eliminating missed keystrokes, typing lag, or dead keys across international keyboard layouts.
+- **On-Screen Keyboard (IME) Policy**: Control whether Android pops up an on-screen keyboard over your virtual desktop (`--display-ime-policy=hide` or `local`).
+- **1-Click Device Keyboard Setup**: Built-in button triggers Android's physical hardware keyboard settings page directly on your phone to set your preferred layout.
+- **OTG Mode**: Control your phone with PC peripherals directly without video mirroring (`--otg`).
+
+### 4. ⚙️ Android Desktop Mode & OEM Rollback (ADB)
 - Inspect and toggle Android global windowing flags (`force_desktop_mode_on_external_displays`, `enable_freeform_support`, `force_resizable_activities`).
 - **Safe Rollback**: Deletes flag overrides (`settings delete global ...`) to cleanly restore your device manufacturer's factory default window manager behavior.
 - ROM capability detection for Samsung DeX, Xiaomi/HyperOS, and standard AOSP.
 
-### 4. 📷 Phone as Webcam / Camera Streaming
+### 5. 📷 Phone as Webcam / Camera Streaming
 - **Zero-Latency Anti-Lag Engine**: Zero-buffer streaming (`--v4l2-buffer=0`) and audio bypass to eliminate USB clock-drift delay.
-- Switch between Front and Rear camera sensors with 1080p, 720p, or 4K resolutions at 30/60 FPS.
+- Switch between Front, Rear, and multi-lens camera sensors with 1080p, 720p, or 4K resolutions at 30/60 FPS.
 - Platform-aware video sink routing (V4L2 on Linux, OBS Virtual Camera / DirectShow on Windows/macOS).
 
-### 5. 📶 Wireless ADB & Android 11+ QR/Code Pairing
+### 6. 📶 Wireless ADB & Android 11+ Pairing Manager
 - **One-Click Wi-Fi Connect**: Connect to devices over local networks (`192.0.2.1:5555`).
 - **Android 11+ Pairing**: Built-in support for Android 11+ wireless pairing codes and dynamic pairing ports (`adb pair <ip>:<port> <code>`).
 - **ADB Daemon Refresh**: 1-click server restart directly from the toolbar or CLI.
 
-### 6. 🎮 Hardware Input (HID) & OTG Mode
-- **Native USB HID Simulation**: Forward physical PC keyboard and mouse input as raw hardware HID devices (`--keyboard=uhid`, `--mouse=uhid`), bypassing software IME latency and compatibility restrictions.
-- **OTG Mode**: Control the phone using your PC peripherals without video mirroring (`--otg`).
-
-### 7. 🎬 Direct Session Recording & Dynamic Discovery
+### 7. 🎬 Session Recording & Drag-and-Drop
 - **One-Click MP4 Recording**: Record screen mirroring or virtual display sessions directly to high-quality MP4 (`~/Videos/scrcpy_<timestamp>.mp4`).
-- **Dynamic Sensor Discovery**: Probe connected devices in real time to discover camera IDs, sensor orientations, and hardware video encoders (`H.264`, `H.265`, `AV1`).
 - **Drag-and-Drop Operations**: Drag any `.apk` directly onto the window to automatically install it, or drag files/folders to instantly push them to `/sdcard/Download/`.
-
-### 8. 🛠️ Robust Architecture & Diagnostics
-- **Safe Subprocess Execution**: List-based argument construction without shell execution, eliminating command injection risks.
-- **Non-Blocking Real-Time Logs**: Continuous stream draining with bounded buffer prevents OS pipe hangs during verbose video playback.
-- **Atomic Config Persistence**: Restrictive file permissions and atomic writes guarantee settings memory across sessions.
-- **System Diagnostics Matrix**: Instant assessment of scrcpy version capabilities, ADB status, and connected devices.
 
 ---
 
-## 💻 Supported Platforms
+## 💻 Supported Platforms & Architectures
 
-| Platform | GUI Support | CLI Support | Virtual Display | Virtual Webcam | Standalone Zero-Python Binary |
-| :--- | :---: | :---: | :---: | :---: | :---: |
-| **Linux** (Ubuntu, Arch, Fedora, Debian) | ✅ PySide6 / Qt | ✅ Full | ✅ Scrcpy ≥ 2.2 | ✅ V4L2 Loopback | ✅ Single-file binary |
-| **Windows 10 / 11** | ✅ PySide6 / Qt | ✅ Full | ✅ Scrcpy ≥ 2.2 | ✅ OBS Virtual Cam | ✅ Single `.exe` |
-| **macOS** (12+ Monterey, Ventura, Sonoma) | ✅ PySide6 / Qt | ✅ Full | ✅ Scrcpy ≥ 2.2 | ✅ OBS Virtual Cam | ✅ Standalone binary |
+| Platform | Architecture | GUI Support | CLI Support | Pre-compiled Standalone Binary |
+| :--- | :--- | :---: | :---: | :--- |
+| **Linux** | x86_64 (Intel / AMD) | ✅ PySide6 | ✅ Full | `scrcpy-control-center-linux-x86_64` |
+| **Linux** | ARM64 (`aarch64` / Pi) | ✅ PySide6 | ✅ Full | `scrcpy-control-center-linux-aarch64` |
+| **Windows** | x64 (Intel / AMD) | ✅ PySide6 | ✅ Full | `scrcpy-control-center-windows-x64.exe` |
+| **Windows on ARM** | ARM64 (Snapdragon X Elite, Surface) | ✅ PySide6 | ✅ Full | Seamless execution via Windows 11 Prism |
+| **macOS** | Apple Silicon (M1 / M2 / M3 / M4) | ✅ PySide6 | ✅ Full | `scrcpy-control-center-macos-arm64` |
+| **macOS** | Intel (`x86_64`) | ✅ PySide6 | ✅ Full | `scrcpy-control-center-macos-x86_64` |
 
 ---
 
 ## 📥 Installation
 
-### Option A: Standalone Executable (Zero Python Required)
-Grab the single-file executable from [GitHub Releases](https://github.com/ijlaal1610/scrcpy-menu/releases):
-- **Windows**: Download `scrcpy-control-center-windows-x64.exe` and double-click.
-- **Linux**: Download `scrcpy-control-center-linux-x86_64`, make it executable (`chmod +x`), and run `./scrcpy-control-center-linux-x86_64`.
-- **macOS**: Download `scrcpy-control-center-macos-arm64`.
+### Option A: Standalone Executable (Zero Python Setup)
+Precompiled binaries generated by our GitHub Actions release workflow:
+1. Download the executable for your OS from [GitHub Releases](https://github.com/ijlaal1610/scrcpy-menu/releases).
+2. Mark executable on Linux/macOS (`chmod +x scrcpy-control-center-*`) and run.
 
-*(To build the standalone single-file binary locally, run `python build_standalone.py`)*
-
-### Option B: Python Package (All Platforms)
+### Option B: Python Package
 
 #### Prerequisites
 1. **scrcpy** (v2.2+ recommended, v3.0+ for flex-display):
-   - **Linux**: `sudo apt install scrcpy` (or snap/pacman)
+   - **Linux**: `sudo apt install scrcpy` (or `pacman -S scrcpy`)
    - **Windows**: `winget install Genymobile.scrcpy` (or `scoop install scrcpy`)
    - **macOS**: `brew install scrcpy`
 2. **Python 3.8+**
@@ -91,14 +95,13 @@ cd scrcpy-menu
 pip install -e .
 ```
 
-*For Linux desktop shortcut integration, you can also run `./install.sh`.*
+*For Linux desktop application menu integration (`.desktop` launcher), run `./install.sh`.*
 
 ---
 
 ## 🎯 Usage
 
 ### Modern Graphical Interface (GUI)
-Launch the dark-themed Qt control center:
 ```bash
 scrcpy-menu
 ```
@@ -109,26 +112,54 @@ Zero external dependencies required (runs in SSH, servers, or minimal environmen
 scrcpy-menu --cli
 ```
 
-### Diagnostics & Compatibility Check
-Check installed scrcpy capabilities and connected devices:
+### Diagnostics & Capability Report
+Inspect scrcpy version support and connected devices:
 ```bash
 scrcpy-menu --diagnostics
 ```
 
 ---
 
-## ⌨️ Essential Keyboard Shortcuts
+## ⌨️ Scrcpy Keyboard & Mouse Shortcuts
 
-| Shortcut (MOD = Alt or Super) | Action |
-| :--- | :--- |
-| `MOD + f` | Toggle Fullscreen |
-| `MOD + o` | Turn phone physical screen OFF (keep mirroring alive) |
-| `MOD + Shift + o` | Turn phone physical screen ON |
-| `MOD + h` | Android Home |
-| `MOD + b` / `Backspace` | Android Back |
-| `MOD + s` | Android App Switcher (Recents) |
-| `MOD + c` / `MOD + v` | Clipboard copy / paste between PC and phone |
-| `MOD + i` | Toggle mouse capture / pointer lock |
+In the table below, **`MOD`** is your shortcut modifier key (by default **Left-Alt** or **Left-Super / Windows Key**, configurable in the Shortcuts tab):
+
+| Category | Shortcut | Action |
+| :--- | :--- | :--- |
+| **Window** | `MOD + f` or `F11` | Toggle fullscreen mode |
+| **Window** | `MOD + w` or Double-click border | Resize window to remove black borders |
+| **Window** | `MOD + g` | Resize window to 1:1 pixel mapping |
+| **Window** | `MOD + Left` / `Right` | Rotate display 90 degrees left / right |
+| **Window** | `MOD + Shift + Left` / `Right` | Flip display horizontally (mirror effect) |
+| **Window** | `MOD + z` / `MOD + Shift + z` | Pause / Unpause video stream |
+| **Navigation** | `Right-click` or `MOD + b` | Back button (Android) |
+| **Navigation** | `Middle-click` or `MOD + h` | Home button (Android) |
+| **Navigation** | `4th-click` or `MOD + s` | App Switcher (Recents overview on phone) |
+| **Navigation** | `5th-click` or `MOD + n` | Expand notification panel |
+| **Power** | `MOD + o` | Turn phone physical screen OFF (keep mirroring) |
+| **Power** | `MOD + Shift + o` | Turn phone physical screen back ON |
+| **Power** | `MOD + p` | Power key (wake/sleep phone) |
+| **Hardware** | `MOD + i` | Toggle mouse capture / pointer lock |
+| **Hardware** | `MOD + k` | Open hardware keyboard settings on phone |
+| **Clipboard** | `MOD + c` / `MOD + v` | Copy / Paste clipboard between PC and phone |
+| **Clipboard** | `MOD + Shift + v` | Paste PC clipboard text as raw keystrokes |
+| **Files** | Drag & drop `.apk` | Automatically install APK onto device |
+| **Files** | Drag & drop files | Push files directly to `/sdcard/Download/` |
+
+---
+
+## ❓ Frequently Asked Questions & Troubleshooting
+
+### Why doesn't the keyboard type immediately when scrcpy opens?
+* **Focus Grab**: scrcpy does not capture keystrokes until you **click once inside the scrcpy display window** (or press `MOD + i` to grab input focus).
+* **Physical Keyboard Layout**: When using Hardware Keyboard Simulation (`--keyboard=uhid`), Android recognizes your PC keyboard as an external physical USB keyboard. If Android has no layout configured, click the **`⌨️ Configure Device Keyboard Layout`** button in Scrcpy Control Center (or press `MOD + k`) to select your keyboard language (e.g. English US).
+* **Text Injection Alternative**: If special characters or accented keys drop, enable **`Prefer Text Events (--prefer-text)`** in Scrcpy Control Center.
+
+### Why does the App Switcher (`MOD + s`) open on the phone screen instead of the Virtual Display?
+In Android's SystemUI architecture, the Overview/Recents component is tied by default to the primary display (`Display 0`). To switch apps on the virtual display:
+1. Press **`MOD + h`** (Home) to open the `SecondaryDisplayLauncher` app drawer directly inside the virtual display window.
+2. Use the **`🔄 Scan Device Apps`** selector in Scrcpy Control Center to launch apps directly on the virtual display.
+3. Use a secondary display launcher like [Taskbar](https://github.com/farmerbb/Taskbar) for an on-screen desktop taskbar.
 
 ---
 
