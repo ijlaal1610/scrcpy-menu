@@ -161,6 +161,15 @@ In Android's SystemUI architecture, the Overview/Recents component is tied by de
 2. Use the **`🔄 Scan Device Apps`** selector in Scrcpy Control Center to launch apps directly on the virtual display.
 3. Use a secondary display launcher like [Taskbar](https://github.com/farmerbb/Taskbar) for an on-screen desktop taskbar.
 
+### How to stream the phone webcam in the background without opening a preview window?
+* In the **Camera / Webcam** tab, uncheck **`Show desktop preview window`**.
+* Scrcpy will run with `--no-video-playback`, piping your phone's camera feed directly into `/dev/video2` (or your chosen V4L2 virtual webcam node) with 0 desktop CPU/GPU window overhead and minimal latency. Select `/dev/video2` in OBS, Zoom, or Google Meet.
+
+### How to eliminate webcam latency when streaming concurrently or over Wi-Fi?
+* Over wireless ADB, streaming two high-bitrate video streams concurrently can cause network queue latency.
+* Switch to the **`⚡ 720p Low Latency / Wi-Fi`** preset (1280x720 @ 30 FPS, 4M bitrate, zero display buffer).
+* For maximum 1080p60 fidelity with zero latency across both webcam and virtual display, connect via USB.
+
 ---
 
 ## 📄 License

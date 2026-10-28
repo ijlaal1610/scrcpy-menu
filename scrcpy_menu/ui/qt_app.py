@@ -1023,15 +1023,44 @@ class ScrcpyMainWindow(QtWidgets.QMainWindow):
         cam_id_box.addWidget(btn_detect_cams)
         form.addRow("Camera Sensor / ID:", cam_id_box)
 
-        self.chk_cam_antilag = QtWidgets.QCheckBox("Anti-Lag / Zero Buffer (--v4l2-buffer=0, --no-audio) [Prevents frame backlog]")
-        form.addRow("", self.chk_cam_antilag)
+        # Virtual Webcam (V4L2) Sink Option
+        sinks = self.platform_adapter.get_camera_sinks()
+        v4l2_box = QtWidgets.QHBoxLayout()
+        self.chk_cam_v4l2 = QtWidgets.QCheckBox("Output to Virtual Webcam Sink (--v4l2-sink)")
+        self.chk_cam_v4l2.setChecked(True if sinks else False)
+        self.chk_cam_v4l2.setToolTip("Stream video to Linux /dev/video virtual webcam node for Zoom, OBS, Meet, or Discord")
+        v4l2_box.addWidget(self.chk_cam_v4l2)
 
-        # Virtual Webcam Device Node
         self.cmb_cam_sink = QtWidgets.QComboBox()
         self.cmb_cam_sink.setEditable(True)
-        sinks = self.platform_adapter.get_camera_sinks()
         self.cmb_cam_sink.addItems(sinks if sinks else ["/dev/video2", "/dev/video0"])
-        form.addRow("Virtual Webcam Sink:", self.cmb_cam_sink)
+        v4l2_box.addWidget(self.cmb_cam_sink)
+        form.addRow("Virtual Webcam (V4L2):", v4l2_box)
+
+        # Desktop Preview Window Toggle (Restored from legacy-gtk)
+        self.chk_cam_preview = QtWidgets.QCheckBox("Show desktop preview window (uncheck to stream to V4L2 in background with --no-video-playback)")
+        self.chk_cam_preview.setChecked(True)
+        self.chk_cam_preview.setToolTip(
+            "When checked, opens a preview window on your PC.\n"
+            "When unchecked, runs purely in the background without opening a window (--no-video-playback), saving CPU/GPU and eliminating window latency."
+        )
+        form.addRow("", self.chk_cam_preview)
+
+        # Anti-Lag Options (from legacy-gtk)
+        self.chk_cam_no_audio = QtWidgets.QCheckBox("Disable audio forwarding (--no-audio) [prevents A/V clock drift latency]")
+        self.chk_cam_no_audio.setChecked(True)
+        self.chk_cam_no_audio.setToolTip("Prevents audio/video clock drift from accumulating seconds of video delay over USB or Wi-Fi.")
+        form.addRow("", self.chk_cam_no_audio)
+
+        self.chk_cam_zero_buf = QtWidgets.QCheckBox("Zero buffer for V4L2 (--v4l2-buffer=0) [eliminates kernel frame backlog in /dev/video]")
+        self.chk_cam_zero_buf.setChecked(True)
+        self.chk_cam_zero_buf.setToolTip("Forces v4l2loopback to drop stale frames if your browser/conferencing app reads slower than the camera produces.")
+        form.addRow("", self.chk_cam_zero_buf)
+
+        self.chk_cam_display_buf = QtWidgets.QCheckBox("Zero buffer for preview window (--display-buffer=0) [instant display rendering]")
+        self.chk_cam_display_buf.setChecked(True)
+        self.chk_cam_display_buf.setToolTip("Bypasses Scrcpy's internal display frame queue for instant zero-latency preview.")
+        form.addRow("", self.chk_cam_display_buf)
 
         self.txt_cam_extra = QtWidgets.QLineEdit()
         self.txt_cam_extra.setPlaceholderText("e.g. --camera-ar=16:9 --camera-high-speed")
@@ -1069,8 +1098,10 @@ class ScrcpyMainWindow(QtWidgets.QMainWindow):
     def _apply_cam_preset(self, res: str, fps: str, antilag: bool, bitrate: str = "8M"):
         self.cmb_cam_res.setCurrentText(res)
         self.cmb_cam_fps.setCurrentText(fps)
-        self.chk_cam_antilag.setChecked(antilag)
         self.cmb_cam_bitrate.setCurrentText(bitrate)
+        self.chk_cam_no_audio.setChecked(antilag)
+        self.chk_cam_zero_buf.setChecked(antilag)
+        self.chk_cam_display_buf.setChecked(antilag)
 
     def _detect_cameras(self):
         target = self._get_selected_serial()
@@ -1519,16 +1550,23 @@ class ScrcpyMainWindow(QtWidgets.QMainWindow):
         if br:
             cmd.append(f"--video-bit-rate={br}")
 
-        sink = self.cmb_cam_sink.currentText().strip()
-        has_sink = bool(sink and self.capabilities.get("has_v4l2_sink", False))
-        if has_sink:
-            cmd.append(f"--v4l2-sink={sink}")
+        # V4L2 Virtual Webcam Sink
+        if self.chk_cam_v4l2.isChecked():
+            sink = self.cmb_cam_sink.currentText().strip()
+            if sink and self.capabilities.get("has_v4l2_sink", False):
+                cmd.append(f"--v4l2-sink={sink}")
+                if self.chk_cam_zero_buf.isChecked():
+                    cmd.append("--v4l2-buffer=0")
 
-        if self.chk_cam_antilag.isChecked():
-            cmd.append("--no-audio")
+        # Desktop Preview Window
+        if not self.chk_cam_preview.isChecked():
+            cmd.append("--no-video-playback")
+        elif self.chk_cam_display_buf.isChecked():
             cmd.append("--display-buffer=0")
-            if has_sink:
-                cmd.append("--v4l2-buffer=0")
+
+        # Audio
+        if self.chk_cam_no_audio.isChecked():
+            cmd.append("--no-audio")
 
         extra = self.txt_cam_extra.text().strip()
         if extra:
@@ -1785,8 +1823,14 @@ class ScrcpyMainWindow(QtWidgets.QMainWindow):
         self.cmb_cam_res.setCurrentText(c.get("camera_size", "1920x1080"))
         self.cmb_cam_fps.setCurrentText(c.get("camera_fps", "30"))
         self.cmb_cam_bitrate.setCurrentText(c.get("camera_bitrate", "8M"))
-        self.chk_cam_antilag.setChecked(c.get("camera_anti_lag", True))
         self.cmb_cam_facing.setCurrentText(c.get("camera_facing", "back"))
+        self.chk_cam_v4l2.setChecked(c.get("camera_v4l2", True if self.capabilities.get("has_v4l2_sink", False) else False))
+        if "camera_sink" in c:
+            self.cmb_cam_sink.setCurrentText(c["camera_sink"])
+        self.chk_cam_preview.setChecked(c.get("camera_preview", True))
+        self.chk_cam_no_audio.setChecked(c.get("camera_no_audio", True))
+        self.chk_cam_zero_buf.setChecked(c.get("camera_zero_buf", True))
+        self.chk_cam_display_buf.setChecked(c.get("camera_display_buf", True))
         self.txt_cam_extra.setText(c.get("camera_extra", ""))
 
         # Shortcuts MOD
@@ -1847,8 +1891,13 @@ class ScrcpyMainWindow(QtWidgets.QMainWindow):
         c["camera_size"] = self.cmb_cam_res.currentText()
         c["camera_fps"] = self.cmb_cam_fps.currentText()
         c["camera_bitrate"] = self.cmb_cam_bitrate.currentText()
-        c["camera_anti_lag"] = self.chk_cam_antilag.isChecked()
         c["camera_facing"] = self.cmb_cam_facing.currentText()
+        c["camera_v4l2"] = self.chk_cam_v4l2.isChecked()
+        c["camera_sink"] = self.cmb_cam_sink.currentText()
+        c["camera_preview"] = self.chk_cam_preview.isChecked()
+        c["camera_no_audio"] = self.chk_cam_no_audio.isChecked()
+        c["camera_zero_buf"] = self.chk_cam_zero_buf.isChecked()
+        c["camera_display_buf"] = self.chk_cam_display_buf.isChecked()
         c["camera_extra"] = self.txt_cam_extra.text().strip()
 
         c["shortcut_mod"] = self.cmb_shortcut_mod.currentText()
