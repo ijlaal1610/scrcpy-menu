@@ -1124,7 +1124,7 @@ class ScrcpyMainWindow(QtWidgets.QMainWindow):
                 cmd.append("--otg")
             else:
                 fps = self.cmb_mirror_fps.currentText().split()[0]
-                if fps != "0":
+                if fps.isdigit() and int(fps) > 0:
                     cmd.append(f"--max-fps={fps}")
 
                 # Resolution / Max-size downscale
@@ -1205,11 +1205,23 @@ class ScrcpyMainWindow(QtWidgets.QMainWindow):
             else:
                 restore_desktop_mode_defaults(target)
 
+            # Resolution: width x height
+            res = ""
             raw_res = self.cmb_vd_res.currentText().strip()
-            res = raw_res.split()[0] if raw_res and not raw_res.startswith("Native") else ""
+            if raw_res and not raw_res.lower().startswith("native"):
+                first_part = raw_res.split()[0]
+                if "x" in first_part:
+                    wh = first_part.split("x")
+                    if len(wh) == 2 and wh[0].isdigit() and wh[1].isdigit():
+                        res = f"{wh[0]}x{wh[1]}"
 
+            # DPI: positive integer only
+            dpi = ""
             raw_dpi = self.cmb_vd_dpi.currentText().strip()
-            dpi = raw_dpi.split()[0] if raw_dpi and not raw_dpi.startswith("Default") else ""
+            if raw_dpi:
+                first_dpi = raw_dpi.split()[0]
+                if first_dpi.isdigit() and int(first_dpi) > 0:
+                    dpi = first_dpi
 
             if res and dpi:
                 cmd.append(f"--new-display={res}/{dpi}")
@@ -1257,7 +1269,7 @@ class ScrcpyMainWindow(QtWidgets.QMainWindow):
 
             # FPS
             fps = self.cmb_vd_fps.currentText().split()[0]
-            if fps and fps != "0":
+            if fps.isdigit() and int(fps) > 0:
                 cmd.append(f"--max-fps={fps}")
 
             if self.chk_vd_hid_kb.isChecked():
@@ -1284,12 +1296,16 @@ class ScrcpyMainWindow(QtWidgets.QMainWindow):
         elif current_idx == 2:
             # ── Tab 2: Camera / Webcam ──
             cmd.append("--video-source=camera")
-            cam_res = self.cmb_cam_res.currentText().split()[0]
-            if cam_res:
-                cmd.append(f"--camera-size={cam_res}")
+            raw_cam_res = self.cmb_cam_res.currentText().strip()
+            if raw_cam_res and not raw_cam_res.lower().startswith("native"):
+                first_cam = raw_cam_res.split()[0]
+                if "x" in first_cam:
+                    wh = first_cam.split("x")
+                    if len(wh) == 2 and wh[0].isdigit() and wh[1].isdigit():
+                        cmd.append(f"--camera-size={wh[0]}x{wh[1]}")
 
             fps = self.cmb_cam_fps.currentText().split()[0]
-            if fps:
+            if fps.isdigit() and int(fps) > 0:
                 cmd.append(f"--camera-fps={fps}")
 
             facing = self.cmb_cam_facing.currentText().strip()
