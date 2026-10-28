@@ -11,8 +11,13 @@ import sys
 import subprocess
 import signal
 import json
+import re
+import threading
+import tempfile
+from collections import deque
 
 CONFIG_FILE = os.path.expanduser("~/.config/scrcpy-menu/config.json")
+BACKUP_SETTINGS_FILE = os.path.expanduser("~/.config/scrcpy-menu/android_settings_backup.json")
 
 
 def load_config():
@@ -21,19 +26,62 @@ def load_config():
         try:
             with open(CONFIG_FILE, "r", encoding="utf-8") as f:
                 return json.load(f)
-        except Exception:
+        except Exception as e:
+            print(f"[!] Warning: Failed to load config from {CONFIG_FILE}: {e}", file=sys.stderr)
             return {}
     return {}
 
 
 def save_config(cfg):
-    """Save settings dictionary to JSON configuration file."""
+    """Save settings dictionary atomically to JSON configuration file."""
     try:
-        os.makedirs(os.path.dirname(CONFIG_FILE), exist_ok=True)
-        with open(CONFIG_FILE, "w", encoding="utf-8") as f:
-            json.dump(cfg, f, indent=2)
-    except Exception:
-        pass
+        conf_dir = os.path.dirname(CONFIG_FILE)
+        os.makedirs(conf_dir, exist_ok=True)
+        # Atomic write via tempfile in same filesystem directory
+        with tempfile.NamedTemporaryFile("w", dir=conf_dir, delete=False, encoding="utf-8") as tf:
+            json.dump(cfg, tf, indent=2)
+            temp_path = tf.name
+        os.replace(temp_path, CONFIG_FILE)
+    except Exception as e:
+        print(f"[!] Warning: Failed to save config to {CONFIG_FILE}: {e}", file=sys.stderr)
+
+
+# Input validators for CLI & GUI security
+def validate_resolution(val):
+    """Validate resolution like 1920x1080 or empty/default."""
+    if not val or val in ("0", "default"):
+        return True
+    return bool(re.match(r"^\d{3,5}x\d{3,5}$", val.strip()))
+
+
+def validate_dpi(val):
+    """Validate DPI integer string (e.g. 180, 240, 420) or empty/default."""
+    if not val or val == "default":
+        return True
+    return bool(re.match(r"^\d{2,3}$", val.strip()))
+
+
+def validate_package_name(val):
+    """Validate Android package name or query syntax (?name, +pkg)."""
+    if not val:
+        return True
+    val = val.lstrip("+").lstrip("?")
+    return bool(re.match(r"^[a-zA-Z0-9_\.]+$", val.strip()))
+
+
+def validate_bitrate(val):
+    """Validate bitrate string like 8M, 16M, 4000K."""
+    if not val:
+        return True
+    return bool(re.match(r"^\d+[kKmMgG]?$", val.strip()))
+
+
+def validate_fps(val):
+    """Validate FPS value like 30, 60, 120 or 0."""
+    if not val:
+        return True
+    return bool(re.match(r"^\d{1,3}$", val.strip()))
+
 
 # Check for GUI environment
 GUI_AVAILABLE = False
@@ -48,24 +96,58 @@ if os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"):
 
 
 class ScrcpyManager:
-    def __init__(self):
+    """Manages scrcpy subprocess with asynchronous, non-blocking log reading."""
+    def __init__(self, log_callback=None, max_log_lines=500):
         self.process = None
+        self.log_callback = log_callback
+        self.logs = deque(maxlen=max_log_lines)
+        self._reader_thread = None
 
     def is_running(self):
         if self.process is None:
             return False
         return self.process.poll() is None
 
+    def _read_stream(self, pipe):
+        """Continuously read lines from scrcpy stdout/stderr to avoid pipe blocking."""
+        try:
+            for line in iter(pipe.readline, ''):
+                if not line:
+                    break
+                line = line.rstrip()
+                self.logs.append(line)
+                if self.log_callback:
+                    try:
+                        self.log_callback(line)
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+        finally:
+            try:
+                pipe.close()
+            except Exception:
+                pass
+
     def start(self, cmd):
         if self.is_running():
             self.stop()
+        self.logs.clear()
         self.process = subprocess.Popen(
             cmd,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
+            bufsize=1,
             preexec_fn=os.setsid
         )
+        # Spawn daemon thread to drain pipe immediately and prevent buffer freeze
+        self._reader_thread = threading.Thread(
+            target=self._read_stream,
+            args=(self.process.stdout,),
+            daemon=True
+        )
+        self._reader_thread.start()
         return self.process
 
     def stop(self):
@@ -79,6 +161,10 @@ class ScrcpyManager:
                 except Exception:
                     pass
         self.process = None
+
+    def get_logs(self):
+        """Return all collected log lines as a single string."""
+        return "\n".join(self.logs)
 
 
 def get_connected_devices():
@@ -137,9 +223,79 @@ def get_desktop_mode_status():
     return status
 
 
+def capture_desktop_mode_backup():
+    """Capture current device settings before making overrides if no backup exists yet."""
+    if os.path.exists(BACKUP_SETTINGS_FILE):
+        return  # Keep the original baseline
+    backup = {}
+    for flag, _desc in DESKTOP_MODE_FLAGS:
+        try:
+            res = subprocess.run(
+                ["adb", "shell", "settings", "get", "global", flag],
+                stdout=subprocess.PIPE, text=True, timeout=3
+            )
+            backup[flag] = res.stdout.strip()
+        except Exception:
+            backup[flag] = "null"
+    try:
+        os.makedirs(os.path.dirname(BACKUP_SETTINGS_FILE), exist_ok=True)
+        with open(BACKUP_SETTINGS_FILE, "w", encoding="utf-8") as f:
+            json.dump(backup, f, indent=2)
+    except Exception as e:
+        print(f"[!] Warning: Failed to record baseline settings: {e}", file=sys.stderr)
+
+
+def restore_desktop_mode_defaults():
+    """Restore OEM baseline or delete overrides from Android global settings."""
+    backup = {}
+    if os.path.exists(BACKUP_SETTINGS_FILE):
+        try:
+            with open(BACKUP_SETTINGS_FILE, "r", encoding="utf-8") as f:
+                backup = json.load(f)
+        except Exception:
+            backup = {}
+
+    errors = []
+    for flag, _desc in DESKTOP_MODE_FLAGS:
+        val = backup.get(flag, "null")
+        try:
+            if val in ("null", ""):
+                # Value was not set originally; delete override to restore OEM default
+                subprocess.run(
+                    ["adb", "shell", "settings", "delete", "global", flag],
+                    stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                    text=True, timeout=3, check=True
+                )
+            else:
+                subprocess.run(
+                    ["adb", "shell", "settings", "put", "global", flag, val],
+                    stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                    text=True, timeout=3, check=True
+                )
+        except Exception as e:
+            errors.append(f"{flag}: {e}")
+
+    # Remove backup file now that we've restored
+    if os.path.exists(BACKUP_SETTINGS_FILE):
+        try:
+            os.remove(BACKUP_SETTINGS_FILE)
+        except Exception:
+            pass
+
+    if errors:
+        return False, "Errors: " + "; ".join(errors)
+    return True, "Restored original Android settings defaults."
+
+
 def set_desktop_mode(enable=True):
-    """Enable or disable all desktop mode flags via ADB. Returns (success, message)."""
-    val = "1" if enable else "0"
+    """Enable or disable all desktop mode flags via ADB with rollback tracking. Returns (success, message)."""
+    if enable:
+        capture_desktop_mode_backup()
+        val = "1"
+    else:
+        # If user explicitly chooses to disable, restore defaults rather than hardcoding 0
+        return restore_desktop_mode_defaults()
+
     errors = []
     for flag, _desc in DESKTOP_MODE_FLAGS:
         try:
@@ -152,8 +308,7 @@ def set_desktop_mode(enable=True):
             errors.append(f"{flag}: {e}")
     if errors:
         return False, "Errors: " + "; ".join(errors)
-    action = "Enabled" if enable else "Disabled"
-    return True, f"{action} all desktop mode flags. A reboot may be needed for full effect."
+    return True, "Enabled all desktop mode flags. A reboot may be needed for full effect."
 
 
 if GUI_AVAILABLE and "--cli" not in sys.argv:
@@ -1214,26 +1369,36 @@ def cli_menu():
     print("  0) Exit")
 
     choice = input("\nEnter choice [0-13]: ").strip()
+    desktop_mode_activated = False
+
     if choice == "1":
-        cmd = "scrcpy --video-source=camera --camera-size=1920x1080 --camera-fps=30 --video-bit-rate=8M --v4l2-buffer=0 --no-audio --v4l2-sink=/dev/video2"
+        cmd = ["scrcpy", "--video-source=camera", "--camera-size=1920x1080", "--camera-fps=30", "--video-bit-rate=8M", "--v4l2-buffer=0", "--no-audio", "--v4l2-sink=/dev/video2"]
     elif choice == "2":
-        cmd = "scrcpy --video-source=camera --camera-size=1920x1080 --camera-fps=60 --video-bit-rate=8M --v4l2-buffer=0 --no-audio --v4l2-sink=/dev/video2"
+        cmd = ["scrcpy", "--video-source=camera", "--camera-size=1920x1080", "--camera-fps=60", "--video-bit-rate=8M", "--v4l2-buffer=0", "--no-audio", "--v4l2-sink=/dev/video2"]
     elif choice == "3":
-        cmd = "scrcpy --video-source=camera --camera-size=1920x1080 --camera-fps=30 --v4l2-sink=/dev/video2"
+        cmd = ["scrcpy", "--video-source=camera", "--camera-size=1920x1080", "--camera-fps=30", "--v4l2-sink=/dev/video2"]
     elif choice == "4":
-        cmd = "scrcpy --video-source=camera --camera-size=1920x1080 --camera-fps=60 --v4l2-sink=/dev/video2"
+        cmd = ["scrcpy", "--video-source=camera", "--camera-size=1920x1080", "--camera-fps=60", "--v4l2-sink=/dev/video2"]
     elif choice == "5":
-        cmd = "scrcpy --max-fps=120 --stay-awake --audio-source=output"
+        cmd = ["scrcpy", "--max-fps=120", "--stay-awake", "--audio-source=output"]
     elif choice == "6":
-        cmd = "scrcpy --max-fps=60 --stay-awake --audio-source=output"
+        cmd = ["scrcpy", "--max-fps=60", "--stay-awake", "--audio-source=output"]
     elif choice == "7":
-        cmd = "scrcpy --max-fps=60 --v4l2-sink=/dev/video2 --audio-source=output"
+        cmd = ["scrcpy", "--max-fps=60", "--v4l2-sink=/dev/video2", "--audio-source=output"]
     elif choice == "8":
-        cmd = "scrcpy --new-display=1920x1080 --flex-display --keep-active --no-vd-destroy-content --audio-source=output --video-bit-rate=8M --max-fps=60"
+        cmd = ["scrcpy", "--new-display=1920x1080", "--flex-display", "--keep-active", "--no-vd-destroy-content", "--audio-source=output", "--video-bit-rate=8M", "--max-fps=60"]
     elif choice == "9":
-        cmd = "scrcpy --new-display=1920x1080 --flex-display --keep-active --no-vd-destroy-content --audio-source=output --video-bit-rate=8M --max-fps=60 --start-app=com.android.chrome"
+        cmd = ["scrcpy", "--new-display=1920x1080", "--flex-display", "--keep-active", "--no-vd-destroy-content", "--audio-source=output", "--video-bit-rate=8M", "--max-fps=60", "--start-app=com.android.chrome"]
     elif choice == "10":
-        cmd = "scrcpy --new-display=1920x1080/180 --flex-display --keep-active --no-vd-destroy-content --audio-source=output --video-bit-rate=16M --max-fps=60"
+        # Preset 10: Desktop Mode (Explicitly configure ADB flags with error handling)
+        print("\n⚙️ Enabling Android Desktop Mode flags via ADB...")
+        succ, msg = set_desktop_mode(True)
+        if not succ:
+            print(f"⚠️ Warning: Could not fully enable desktop mode flags: {msg}")
+        else:
+            print(f"✔ {msg}")
+            desktop_mode_activated = True
+        cmd = ["scrcpy", "--new-display=1920x1080/180", "--flex-display", "--keep-active", "--no-vd-destroy-content", "--audio-source=output", "--video-bit-rate=16M", "--max-fps=60"]
     elif choice == "11":
         cmd = cli_custom_virtual_display()
         if not cmd:
@@ -1249,8 +1414,13 @@ def cli_menu():
         print("Exiting.")
         sys.exit(0)
 
-    print(f"\nExecuting: {cmd}\n")
-    os.system(cmd)
+    print(f"\nExecuting: {' '.join(cmd)}\n")
+    try:
+        subprocess.run(cmd)
+    except KeyboardInterrupt:
+        print("\nProcess interrupted by user.")
+    except Exception as e:
+        print(f"\n[!] Execution error: {e}", file=sys.stderr)
 
 
 def cli_toggle_desktop_mode():
@@ -1266,14 +1436,14 @@ def cli_toggle_desktop_mode():
     print(f"\nOverall Status: {'✅ FULLY ENABLED' if all_enabled else '⚠️  PARTIAL / DISABLED'}")
     
     try:
-        action = input("\nOptions: [1] Enable all flags  [2] Disable all flags  [Enter] Keep unchanged: ").strip()
+        action = input("\nOptions: [1] Enable all flags  [2] Restore OEM defaults  [Enter] Keep unchanged: ").strip()
     except (EOFError, KeyboardInterrupt):
         action = ""
     if action == "1":
         succ, msg = set_desktop_mode(True)
         print(f"\n✔ {msg}")
     elif action == "2":
-        succ, msg = set_desktop_mode(False)
+        succ, msg = restore_desktop_mode_defaults()
         print(f"\n✔ {msg}")
     else:
         print("No changes made.")
@@ -1324,7 +1494,7 @@ def cli_print_shortcuts():
 
 
 def cli_custom_virtual_display():
-    """Interactive builder for a custom virtual display command."""
+    """Interactive builder for a custom virtual display command with strict validation."""
     print("\n── Custom Virtual Display Builder ──")
 
     # Resolution
@@ -1339,6 +1509,9 @@ def cli_custom_virtual_display():
     res_map = {"1": "1920x1080", "2": "2560x1440", "3": "1280x720", "4": "1024x768", "5": "", "6": ""}
     if r == "6":
         res = input("Enter WxH (e.g. 1920x1080): ").strip()
+        if not validate_resolution(res):
+            print(f"[!] Invalid resolution format '{res}'. Defaulting to 1920x1080.")
+            res = "1920x1080"
     else:
         res = res_map.get(r, "1920x1080")
 
@@ -1352,6 +1525,9 @@ def cli_custom_virtual_display():
     d = input("Choice [1]: ").strip() or "1"
     dpi_map = {"1": "", "2": "420", "3": "320", "4": "240", "5": "180"}
     dpi = dpi_map.get(d, "")
+    if dpi and not validate_dpi(dpi):
+        print(f"[!] Invalid DPI value '{dpi}'. Using default.")
+        dpi = ""
 
     # Build new-display arg
     if res and dpi:
@@ -1373,9 +1549,12 @@ def cli_custom_virtual_display():
     # Start app
     app = input("Start an app? Enter package name, '?' to search, or press Enter to skip: ").strip()
     if app:
-        force = input("  Force-stop app first? [y/N]: ").strip().lower()
-        prefix = "+" if force == "y" else ""
-        parts.append(f"--start-app={prefix}{app}")
+        if not validate_package_name(app):
+            print(f"[!] Rejected unsafe package name format: '{app}'. Skipping app start.")
+        else:
+            force = input("  Force-stop app first? [y/N]: ").strip().lower()
+            prefix = "+" if force == "y" else ""
+            parts.append(f"--start-app={prefix}{app}")
 
     # Keep active
     keep = input("Keep display active? [Y/n]: ").strip().lower()
@@ -1412,14 +1591,20 @@ def cli_custom_virtual_display():
 
     # Bitrate
     br = input("Bitrate (e.g. 8M, 16M) [8M]: ").strip() or "8M"
+    if not validate_bitrate(br):
+        print(f"[!] Invalid bitrate '{br}'. Defaulting to 8M.")
+        br = "8M"
     parts.append(f"--video-bit-rate={br}")
 
     # Max FPS
     fps = input("Max FPS (0=unlimited) [60]: ").strip() or "60"
+    if not validate_fps(fps):
+        print(f"[!] Invalid FPS '{fps}'. Defaulting to 60.")
+        fps = "60"
     if fps != "0":
         parts.append(f"--max-fps={fps}")
 
-    return " ".join(parts)
+    return parts
 
 
 if __name__ == "__main__":
