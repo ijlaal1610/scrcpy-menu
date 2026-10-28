@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# scrcpy-menu installer
+# scrcpy-menu installer for Linux
 set -e
 
 INSTALL_BIN="$HOME/.local/bin"
@@ -11,10 +11,19 @@ echo "==> Installing scrcpy-menu..."
 mkdir -p "$INSTALL_BIN"
 mkdir -p "$INSTALL_APPS"
 
-# Install executable script
+# Install package in user mode
+if command -v pip3 >/dev/null 2>&1; then
+    echo "✔ Installing scrcpy-menu package..."
+    pip3 install --user --break-system-packages -e "$DIR" >/dev/null 2>&1 || pip3 install --user -e "$DIR"
+else
+    cp "$DIR/scrcpy-menu" "$INSTALL_BIN/scrcpy-menu"
+    chmod +x "$INSTALL_BIN/scrcpy-menu"
+fi
+
+# Ensure launcher script is in ~/.local/bin
 cp "$DIR/scrcpy-menu" "$INSTALL_BIN/scrcpy-menu"
 chmod +x "$INSTALL_BIN/scrcpy-menu"
-echo "✔ Copied script to $INSTALL_BIN/scrcpy-menu"
+echo "✔ Copied launcher script to $INSTALL_BIN/scrcpy-menu"
 
 # Install desktop entry
 sed "s|^Exec=scrcpy-menu|Exec=$INSTALL_BIN/scrcpy-menu|g" "$DIR/scrcpy-menu.desktop" > "$INSTALL_APPS/scrcpy-menu.desktop"

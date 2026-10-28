@@ -1,4 +1,11 @@
 __pycache__/
-*.pyc
-.system_generated/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+dist/
+build/
 *.log
+.system_generated/
+.DS_Store
+Thumbs.db

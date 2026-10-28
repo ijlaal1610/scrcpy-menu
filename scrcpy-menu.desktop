@@ -1,8 +1,8 @@
 [Desktop Entry]
-Name=Scrcpy – Camera / Mirror
-Comment=Camera capture & screen mirroring with scrcpy
+Name=Scrcpy Control Center
+Comment=Cross-platform GUI & CLI for Android screen mirroring, camera webcam, and virtual display
 Exec=scrcpy-menu
 Terminal=false
 Type=Application
 Icon=camera-video
-Categories=AudioVideo;Video;
+Categories=AudioVideo;Video;Utility;
