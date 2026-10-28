@@ -234,3 +234,48 @@ def query_installed_packages(device_serial: Optional[str] = None) -> List[str]:
         return sorted(pkgs)
     except Exception:
         return []
+
+
+def get_top_apps_by_display(device_serial: Optional[str] = None) -> Dict[int, str]:
+    """
+    Parse 'dumpsys activity activities' to identify the top active package on each display ID.
+    Returns mapping {display_id: package_name}.
+    """
+    cmd = ["adb"]
+    if device_serial:
+        cmd.extend(["-s", device_serial])
+    cmd.extend(["shell", "dumpsys", "activity", "activities"])
+
+    try:
+        res = subprocess.run(cmd, capture_output=True, text=True, timeout=8, check=False)
+        out = res.stdout
+        display_blocks = re.split(r"Display\s*#(\d+)", out)
+        apps = {}
+        for i in range(1, len(display_blocks), 2):
+            d_id = int(display_blocks[i])
+            block = display_blocks[i + 1]
+            m = re.search(r"topResumedActivity=ActivityRecord\{[^\}]*\s+([a-zA-Z0-9_\.]+)/", block)
+            if m:
+                apps[d_id] = m.group(1)
+        return apps
+    except Exception:
+        return {}
+
+
+def force_stop_app(package_name: str, device_serial: Optional[str] = None) -> Tuple[bool, str]:
+    """Force stop a package on the target device via 'adb shell am force-stop <package>'."""
+    if not package_name:
+        return False, "Package name cannot be empty."
+
+    cmd = ["adb"]
+    if device_serial:
+        cmd.extend(["-s", device_serial])
+    cmd.extend(["shell", "am", "force-stop", package_name])
+
+    try:
+        res = subprocess.run(cmd, capture_output=True, text=True, timeout=8, check=False)
+        if res.returncode == 0:
+            return True, f"Force-stopped {package_name}"
+        return False, res.stderr.strip() or f"Exit code {res.returncode}"
+    except Exception as e:
+        return False, str(e)

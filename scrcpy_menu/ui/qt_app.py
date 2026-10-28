@@ -27,6 +27,8 @@ from ..core.device import (
     query_device_cameras,
     query_device_encoders,
     query_installed_packages,
+    get_top_apps_by_display,
+    force_stop_app,
 )
 from ..core.desktop_mode import (
     DESKTOP_MODE_FLAGS,
@@ -665,7 +667,13 @@ class ScrcpyMainWindow(QtWidgets.QMainWindow):
 
         self.txt_vd_app = QtWidgets.QLineEdit()
         self.txt_vd_app.setPlaceholderText("Package name (e.g. com.android.chrome) or leave blank")
-        form.addRow("Package Name:", self.txt_vd_app)
+        app_ctrl_row = QtWidgets.QHBoxLayout()
+        app_ctrl_row.addWidget(self.txt_vd_app, stretch=1)
+        btn_kill_app = QtWidgets.QPushButton("🛑 Force-Stop App")
+        btn_kill_app.setToolTip("Instantly terminate the top app running on the virtual display (or entered package)")
+        btn_kill_app.clicked.connect(self._on_kill_active_app_clicked)
+        app_ctrl_row.addWidget(btn_kill_app)
+        form.addRow("Package Name:", app_ctrl_row)
 
         self.chk_vd_force_stop = QtWidgets.QCheckBox("Force-stop app before starting (+prefix) [moves app from phone to virtual display]")
         form.addRow("", self.chk_vd_force_stop)
@@ -686,7 +694,13 @@ class ScrcpyMainWindow(QtWidgets.QMainWindow):
         self.chk_vd_destroy = QtWidgets.QCheckBox("Destroy Content on Close (uncheck to preserve running apps back to phone)")
         feat_form.addRow("", self.chk_vd_destroy)
 
-        self.chk_vd_no_decor = QtWidgets.QCheckBox("Clean Display — No Status/Nav Bars (--no-vd-system-decorations)")
+        self.chk_vd_no_decor = QtWidgets.QCheckBox("Clean Display — No Status/Nav Bars (--no-vd-system-decorations) [Requires App]")
+        self.chk_vd_no_decor.setToolTip(
+            "Disables Android status bar and navigation bar for a true borderless app screen.\n\n"
+            "CRITICAL: Requires an application in 'Launch Preset App' or 'Package Name'.\n"
+            "Without an app, Android cannot launch its secondary desktop launcher, leaving an empty surface that freezes waiting for content."
+        )
+        self.chk_vd_no_decor.toggled.connect(self._on_no_decor_toggled)
         feat_form.addRow("", self.chk_vd_no_decor)
 
         self.chk_vd_stay_awake = QtWidgets.QCheckBox("Keep Device Awake (--stay-awake) [prevents phone sleep/freeze]")
@@ -785,6 +799,13 @@ class ScrcpyMainWindow(QtWidgets.QMainWindow):
         else:
             self.txt_vd_app.setText(txt)
 
+    def _on_no_decor_toggled(self, checked: bool):
+        if checked:
+            app = self.txt_vd_app.text().strip()
+            if not app or app.lower() in ("none", "(none)", "none - blank virtual display") or app.lower().startswith("(none"):
+                self.lbl_status.setText("● Notice: Clean Display requires a launched app; otherwise the screen freezes on blank")
+                self.lbl_status.setStyleSheet("color: #eab308; font-weight: bold;")
+
     def _scan_installed_apps(self):
         target = self._get_selected_serial()
         self.lbl_status.setText("● Scanning device apps via ADB...")
@@ -804,6 +825,49 @@ class ScrcpyMainWindow(QtWidgets.QMainWindow):
             self, "App Scanner", f"Discovered {len(pkgs)} launchable apps from device!"
         )
         self.lbl_status.setText("● Ready")
+
+    def _on_kill_active_app_clicked(self):
+        target_serial = self._get_selected_serial()
+        self.lbl_status.setText("● Inspecting running app on virtual display...")
+        apps_by_display = get_top_apps_by_display(target_serial)
+        vd_apps = [pkg for d_id, pkg in apps_by_display.items() if d_id != 0]
+
+        pkg_to_kill = ""
+        if vd_apps:
+            pkg_to_kill = vd_apps[0]
+        else:
+            raw_txt = self.txt_vd_app.text().strip()
+            if raw_txt and raw_txt.lower() not in ("none", "(none)", "none - blank virtual display") and not raw_txt.lower().startswith("(none"):
+                pkg_to_kill = raw_txt
+
+        if not pkg_to_kill:
+            QtWidgets.QMessageBox.information(
+                self,
+                "No Running App Detected",
+                "Could not automatically detect an active app on the virtual display.\n\n"
+                "Please enter the app package name in 'Package Name' to force-stop it."
+            )
+            self.lbl_status.setText("● Ready")
+            return
+
+        reply = QtWidgets.QMessageBox.question(
+            self,
+            "Force-Stop Application",
+            f"Are you sure you want to force-stop '{pkg_to_kill}' on the device?\n\n"
+            "This will instantly terminate the process on the virtual display.",
+            QtWidgets.QMessageBox.StandardButton.Yes | QtWidgets.QMessageBox.StandardButton.No,
+            QtWidgets.QMessageBox.StandardButton.Yes,
+        )
+        if reply == QtWidgets.QMessageBox.StandardButton.Yes:
+            success, msg = force_stop_app(pkg_to_kill, target_serial)
+            if success:
+                self.lbl_status.setText(f"● Terminated {pkg_to_kill}")
+                self.lbl_status.setStyleSheet("color: #10b981; font-weight: bold;")
+                QtWidgets.QMessageBox.information(self, "App Terminated", f"Successfully force-stopped '{pkg_to_kill}'.")
+            else:
+                self.lbl_status.setText(f"● Failed to terminate {pkg_to_kill}")
+                self.lbl_status.setStyleSheet("color: #ef4444; font-weight: bold;")
+                QtWidgets.QMessageBox.critical(self, "Error", f"Failed to stop app: {msg}")
 
     def _apply_vd_preset(self, res: str, dpi: str, flex: bool, app: str, force_desktop: bool = True):
         self.cmb_vd_res.setCurrentText(res)
@@ -1291,8 +1355,19 @@ class ScrcpyMainWindow(QtWidgets.QMainWindow):
             if not self.chk_vd_destroy.isChecked():
                 cmd.append("--no-vd-destroy-content")
 
+            app = self.txt_vd_app.text().strip()
+            has_app = bool(
+                app
+                and app.lower() not in ("none", "(none)", "none - blank virtual display")
+                and not app.lower().startswith("(none")
+            )
+
             if self.chk_vd_no_decor.isChecked():
-                cmd.append("--no-vd-system-decorations")
+                if has_app:
+                    cmd.append("--no-vd-system-decorations")
+                else:
+                    self.lbl_status.setText("● Notice: Clean display skipped (requires an app to avoid freeze)")
+                    self.lbl_status.setStyleSheet("color: #eab308; font-weight: bold;")
 
             if self.chk_vd_stay_awake.isChecked():
                 cmd.append("--stay-awake")
@@ -1340,8 +1415,7 @@ class ScrcpyMainWindow(QtWidgets.QMainWindow):
             if self.chk_vd_record.isChecked():
                 cmd.append(f"--record={_get_record_arg()}")
 
-            app = self.txt_vd_app.text().strip()
-            if app and app.lower() not in ("none", "(none)", "none - blank virtual display") and not app.lower().startswith("(none"):
+            if has_app:
                 prefix = "+" if self.chk_vd_force_stop.isChecked() else ""
                 cmd.append(f"--start-app={prefix}{app}")
 
@@ -1400,6 +1474,29 @@ class ScrcpyMainWindow(QtWidgets.QMainWindow):
             self.lbl_status.setText("● Stopping scrcpy...")
             self.lbl_status.setStyleSheet("color: #eab308; font-weight: bold;")
         else:
+            current_idx = self.tabs.currentIndex()
+            if current_idx == 1 and self.chk_vd_no_decor.isChecked():
+                app = self.txt_vd_app.text().strip()
+                has_app = bool(
+                    app
+                    and app.lower() not in ("none", "(none)", "none - blank virtual display")
+                    and not app.lower().startswith("(none")
+                )
+                if not has_app:
+                    reply = QtWidgets.QMessageBox.question(
+                        self,
+                        "Clean Display Requires an App",
+                        "Clean Display (--no-vd-system-decorations) removes all Android system bars and desktop launchers.\n\n"
+                        "Without launching an app via '--start-app', Android creates a 0-frame blank display, causing scrcpy to freeze on launch.\n\n"
+                        "Would you like to turn off Clean Display and launch the standard Android desktop?",
+                        QtWidgets.QMessageBox.StandardButton.Yes | QtWidgets.QMessageBox.StandardButton.Cancel,
+                        QtWidgets.QMessageBox.StandardButton.Yes,
+                    )
+                    if reply == QtWidgets.QMessageBox.StandardButton.Yes:
+                        self.chk_vd_no_decor.setChecked(False)
+                    else:
+                        return
+
             cmd = self._build_command_for_active_tab()
             success = self.proc_manager.start(cmd)
             if success:
