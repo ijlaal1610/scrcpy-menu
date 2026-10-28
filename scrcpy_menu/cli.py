@@ -271,10 +271,11 @@ def run_cli_menu():
     print(" 12) ⚙️  Toggle Android Desktop Mode via ADB (Enable / Restore Defaults)")
     print(" 13) ⌨️  View Keyboard & Mouse Shortcuts Reference")
     print(" 14) 🔍 View System Diagnostics Report")
+    print(" 15) ⚡ Restart ADB Server Daemon")
     print("  0) Exit")
 
     try:
-        choice = input("\nEnter choice [0-14]: ").strip()
+        choice = input("\nEnter choice [0-15]: ").strip()
     except (EOFError, KeyboardInterrupt):
         choice = "0"
 
@@ -316,6 +317,12 @@ def run_cli_menu():
         return
     elif choice == "14":
         print("\n" + generate_system_diagnostics(target_serial))
+        return
+    elif choice == "15":
+        from .core.device import restart_adb_server
+        print("\nRestarting ADB server...")
+        succ, msg = restart_adb_server()
+        print(f"✔ {msg}\n" if succ else f"[!] {msg}\n")
         return
     elif choice in ("0", ""):
         print("Exiting.")

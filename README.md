@@ -33,7 +33,21 @@ Designed for high-performance mobile screen mirroring, virtual secondary display
 - Switch between Front and Rear camera sensors with 1080p, 720p, or 4K resolutions at 30/60 FPS.
 - Platform-aware video sink routing (V4L2 on Linux, OBS Virtual Camera / DirectShow on Windows/macOS).
 
-### 5. 🛠️ Robust Architecture & Diagnostics
+### 5. 📶 Wireless ADB & Android 11+ QR/Code Pairing
+- **One-Click Wi-Fi Connect**: Connect to devices over local networks (`192.0.2.1:5555`).
+- **Android 11+ Pairing**: Built-in support for Android 11+ wireless pairing codes and dynamic pairing ports (`adb pair <ip>:<port> <code>`).
+- **ADB Daemon Refresh**: 1-click server restart directly from the toolbar or CLI.
+
+### 6. 🎮 Hardware Input (HID) & OTG Mode
+- **Native USB HID Simulation**: Forward physical PC keyboard and mouse input as raw hardware HID devices (`--keyboard=uhid`, `--mouse=uhid`), bypassing software IME latency and compatibility restrictions.
+- **OTG Mode**: Control the phone using your PC peripherals without video mirroring (`--otg`).
+
+### 7. 🎬 Direct Session Recording & Dynamic Discovery
+- **One-Click MP4 Recording**: Record screen mirroring or virtual display sessions directly to high-quality MP4 (`~/Videos/scrcpy_<timestamp>.mp4`).
+- **Dynamic Sensor Discovery**: Probe connected devices in real time to discover camera IDs, sensor orientations, and hardware video encoders (`H.264`, `H.265`, `AV1`).
+- **Drag-and-Drop Operations**: Drag any `.apk` directly onto the window to automatically install it, or drag files/folders to instantly push them to `/sdcard/Download/`.
+
+### 8. 🛠️ Robust Architecture & Diagnostics
 - **Safe Subprocess Execution**: List-based argument construction without shell execution, eliminating command injection risks.
 - **Non-Blocking Real-Time Logs**: Continuous stream draining with bounded buffer prevents OS pipe hangs during verbose video playback.
 - **Atomic Config Persistence**: Restrictive file permissions and atomic writes guarantee settings memory across sessions.
@@ -43,25 +57,33 @@ Designed for high-performance mobile screen mirroring, virtual secondary display
 
 ## 💻 Supported Platforms
 
-| Platform | GUI Support | CLI Support | Virtual Display | Virtual Webcam |
-| :--- | :---: | :---: | :---: | :---: |
-| **Linux** (Ubuntu, Arch, Fedora, Debian) | ✅ PySide6 / Qt | ✅ Full | ✅ Scrcpy ≥ 2.2 | ✅ V4L2 Loopback |
-| **Windows 10 / 11** | ✅ PySide6 / Qt | ✅ Full | ✅ Scrcpy ≥ 2.2 | ✅ OBS Virtual Cam |
-| **macOS** (12+ Monterey, Ventura, Sonoma) | ✅ PySide6 / Qt | ✅ Full | ✅ Scrcpy ≥ 2.2 | ✅ OBS Virtual Cam |
+| Platform | GUI Support | CLI Support | Virtual Display | Virtual Webcam | Standalone Zero-Python Binary |
+| :--- | :---: | :---: | :---: | :---: | :---: |
+| **Linux** (Ubuntu, Arch, Fedora, Debian) | ✅ PySide6 / Qt | ✅ Full | ✅ Scrcpy ≥ 2.2 | ✅ V4L2 Loopback | ✅ Single-file binary |
+| **Windows 10 / 11** | ✅ PySide6 / Qt | ✅ Full | ✅ Scrcpy ≥ 2.2 | ✅ OBS Virtual Cam | ✅ Single `.exe` |
+| **macOS** (12+ Monterey, Ventura, Sonoma) | ✅ PySide6 / Qt | ✅ Full | ✅ Scrcpy ≥ 2.2 | ✅ OBS Virtual Cam | ✅ Standalone binary |
 
 ---
 
 ## 📥 Installation
 
-### Prerequisites
+### Option A: Standalone Executable (Zero Python Required)
+Grab the single-file executable from [GitHub Releases](https://github.com/ijlaal1610/scrcpy-menu/releases):
+- **Windows**: Download `scrcpy-control-center-windows-x64.exe` and double-click.
+- **Linux**: Download `scrcpy-control-center-linux-x86_64`, make it executable (`chmod +x`), and run `./scrcpy-control-center-linux-x86_64`.
+- **macOS**: Download `scrcpy-control-center-macos-arm64`.
+
+*(To build the standalone single-file binary locally, run `python build_standalone.py`)*
+
+### Option B: Python Package (All Platforms)
+
+#### Prerequisites
 1. **scrcpy** (v2.2+ recommended, v3.0+ for flex-display):
    - **Linux**: `sudo apt install scrcpy` (or snap/pacman)
    - **Windows**: `winget install Genymobile.scrcpy` (or `scoop install scrcpy`)
    - **macOS**: `brew install scrcpy`
 2. **Python 3.8+**
 3. USB debugging enabled on your Android phone.
-
-### Quick Install (All Platforms)
 
 ```bash
 git clone https://github.com/ijlaal1610/scrcpy-menu.git

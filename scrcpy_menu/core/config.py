@@ -14,6 +14,10 @@ DEFAULT_CONFIG = {
     "mirror_audio": True,
     "mirror_turn_screen_off": False,
     "mirror_fullscreen": False,
+    "mirror_hid_keyboard": False,
+    "mirror_hid_mouse": False,
+    "mirror_otg": False,
+    "mirror_record": False,
 
     # Virtual display mode
     "vd_resolution": "1920x1080",
@@ -26,6 +30,9 @@ DEFAULT_CONFIG = {
     "vd_fps": "60",
     "vd_app": "",
     "vd_force_desktop_mode": False,
+    "vd_hid_keyboard": False,
+    "vd_hid_mouse": False,
+    "vd_record": False,
 
     # Camera mode
     "camera_size": "1920x1080",
@@ -33,10 +40,12 @@ DEFAULT_CONFIG = {
     "camera_bitrate": "8M",
     "camera_anti_lag": True,
     "camera_facing": "back",
+    "camera_id": "",
     "camera_sink": "/dev/video2",
 
     # UI preferences
     "selected_device": "",
+    "record_dir": "",
     "last_tab": 0,
     "theme": "dark",
 }

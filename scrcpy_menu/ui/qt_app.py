@@ -1,7 +1,9 @@
 """Modern Cross-Platform Qt GUI for Scrcpy Control Center using PySide6 (with PyQt fallback)."""
 
+import os
 import sys
-import subprocess
+import time
+from pathlib import Path
 from typing import Optional, List, Dict
 
 try:
@@ -15,7 +17,17 @@ except ImportError:
         raise ImportError("Neither PySide6 nor PyQt6 is installed. Please install PySide6 via 'pip install PySide6'.")
 
 from ..core.config import load_config, save_config
-from ..core.device import get_connected_devices, is_adb_available, connect_wireless
+from ..core.device import (
+    get_connected_devices,
+    is_adb_available,
+    connect_wireless,
+    pair_wireless,
+    restart_adb_server,
+    install_apk,
+    push_file,
+    query_device_cameras,
+    query_device_encoders,
+)
 from ..core.desktop_mode import (
     DESKTOP_MODE_FLAGS,
     get_desktop_mode_status,
@@ -176,7 +188,7 @@ QScrollBar::handle:vertical {
 
 
 class ScrcpyMainWindow(QtWidgets.QMainWindow):
-    """Main application window."""
+    """Main application window with drag-and-drop, wireless pairing, and advanced scrcpy controls."""
 
     log_signal = Signal(str)
     process_exit_signal = Signal(int)
@@ -184,8 +196,9 @@ class ScrcpyMainWindow(QtWidgets.QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Scrcpy Control Center")
-        self.resize(880, 720)
-        self.setMinimumSize(780, 600)
+        self.resize(920, 750)
+        self.setMinimumSize(800, 620)
+        self.setAcceptDrops(True)
 
         self.config = load_config()
         self.proc_manager = ScrcpyProcessManager()
@@ -233,16 +246,22 @@ class ScrcpyMainWindow(QtWidgets.QMainWindow):
         header_layout.addWidget(lbl_dev)
 
         self.cmb_devices = QtWidgets.QComboBox()
-        self.cmb_devices.setMinimumWidth(240)
+        self.cmb_devices.setMinimumWidth(230)
         header_layout.addWidget(self.cmb_devices)
 
         btn_refresh_dev = QtWidgets.QPushButton("🔄 Refresh")
         btn_refresh_dev.clicked.connect(self._refresh_devices)
         header_layout.addWidget(btn_refresh_dev)
 
-        btn_wifi_dev = QtWidgets.QPushButton("📶 Wi-Fi Pair")
-        btn_wifi_dev.clicked.connect(self._dialog_wifi_connect)
+        btn_wifi_dev = QtWidgets.QPushButton("📶 Wi-Fi & Pair")
+        btn_wifi_dev.setToolTip("Connect or pair wirelessly via ADB")
+        btn_wifi_dev.clicked.connect(self._dialog_wifi_manager)
         header_layout.addWidget(btn_wifi_dev)
+
+        btn_restart_adb = QtWidgets.QPushButton("⚡ Restart ADB")
+        btn_restart_adb.setToolTip("Restart the local ADB server daemon")
+        btn_restart_adb.clicked.connect(self._restart_adb_daemon)
+        header_layout.addWidget(btn_restart_adb)
 
         main_layout.addLayout(header_layout)
 
@@ -291,7 +310,7 @@ class ScrcpyMainWindow(QtWidgets.QMainWindow):
         log_layout.setSpacing(6)
 
         log_header = QtWidgets.QHBoxLayout()
-        lbl_log = QtWidgets.QLabel("Live Console Output:")
+        lbl_log = QtWidgets.QLabel("Live Console Output (drag APKs / files here to push):")
         lbl_log.setStyleSheet("font-weight: bold; color: #94a3b8;")
         log_header.addWidget(lbl_log)
         log_header.addStretch()
@@ -307,7 +326,7 @@ class ScrcpyMainWindow(QtWidgets.QMainWindow):
 
         self.txt_logs = QtWidgets.QPlainTextEdit()
         self.txt_logs.setReadOnly(True)
-        self.txt_logs.setMaximumHeight(150)
+        self.txt_logs.setMaximumHeight(140)
         log_layout.addWidget(self.txt_logs)
 
         main_layout.addWidget(self.log_widget)
@@ -317,7 +336,7 @@ class ScrcpyMainWindow(QtWidgets.QMainWindow):
     # ─────────────────────────────────────────────────────────────
     def _setup_tab_mirror(self):
         layout = QtWidgets.QVBoxLayout(self.tab_mirror)
-        layout.setSpacing(14)
+        layout.setSpacing(12)
 
         # Presets Group
         grp_presets = QtWidgets.QGroupBox("Quick Presets")
@@ -334,10 +353,10 @@ class ScrcpyMainWindow(QtWidgets.QMainWindow):
         presets_layout.addWidget(btn_lowlat)
         layout.addWidget(grp_presets)
 
-        # Options Group
+        # Stream & Display Options
         grp_opts = QtWidgets.QGroupBox("Display & Stream Options")
         form = QtWidgets.QFormLayout(grp_opts)
-        form.setSpacing(10)
+        form.setSpacing(8)
 
         self.cmb_mirror_fps = QtWidgets.QComboBox()
         self.cmb_mirror_fps.addItems(["120", "90", "60", "30", "0 (Unlimited)"])
@@ -360,6 +379,25 @@ class ScrcpyMainWindow(QtWidgets.QMainWindow):
         form.addRow("", self.chk_mirror_fullscreen)
 
         layout.addWidget(grp_opts)
+
+        # Input & Recording Options
+        grp_advanced = QtWidgets.QGroupBox("Hardware Input (HID) & Recording")
+        adv_form = QtWidgets.QFormLayout(grp_advanced)
+        adv_form.setSpacing(8)
+
+        self.chk_mirror_hid_kb = QtWidgets.QCheckBox("Hardware Keyboard Simulation (--keyboard=uhid) [bypasses on-screen keyboard]")
+        adv_form.addRow("", self.chk_mirror_hid_kb)
+
+        self.chk_mirror_hid_mouse = QtWidgets.QCheckBox("Hardware Mouse Capture (--mouse=uhid) [high-precision cursor lock]")
+        adv_form.addRow("", self.chk_mirror_hid_mouse)
+
+        self.chk_mirror_otg = QtWidgets.QCheckBox("OTG Mode (--otg) [use PC keyboard/mouse directly without screen mirroring]")
+        adv_form.addRow("", self.chk_mirror_otg)
+
+        self.chk_mirror_record = QtWidgets.QCheckBox("Record Session to MP4 video in ~/Videos (--record)")
+        adv_form.addRow("", self.chk_mirror_record)
+
+        layout.addWidget(grp_advanced)
         layout.addStretch()
 
     def _apply_mirror_preset(self, fps: int, bitrate: str, awake: bool, audio: bool):
@@ -373,7 +411,7 @@ class ScrcpyMainWindow(QtWidgets.QMainWindow):
     # ─────────────────────────────────────────────────────────────
     def _setup_tab_vd(self):
         layout = QtWidgets.QVBoxLayout(self.tab_vd)
-        layout.setSpacing(12)
+        layout.setSpacing(10)
 
         # Presets Group
         grp_presets = QtWidgets.QGroupBox("Virtual Display Presets")
@@ -394,7 +432,7 @@ class ScrcpyMainWindow(QtWidgets.QMainWindow):
         # Display Configuration
         grp_cfg = QtWidgets.QGroupBox("Display & Resolution Settings")
         form = QtWidgets.QFormLayout(grp_cfg)
-        form.setSpacing(10)
+        form.setSpacing(6)
 
         self.cmb_vd_res = QtWidgets.QComboBox()
         self.cmb_vd_res.addItems(["1920x1080", "2560x1440", "1280x720", "1024x768", "Native"])
@@ -419,6 +457,12 @@ class ScrcpyMainWindow(QtWidgets.QMainWindow):
 
         self.chk_vd_destroy = QtWidgets.QCheckBox("Destroy Content (close apps on virtual display when window is closed)")
         form.addRow("", self.chk_vd_destroy)
+
+        self.chk_vd_hid_kb = QtWidgets.QCheckBox("Hardware Keyboard Simulation (--keyboard=uhid)")
+        form.addRow("", self.chk_vd_hid_kb)
+
+        self.chk_vd_record = QtWidgets.QCheckBox("Record Virtual Display session to MP4 (--record)")
+        form.addRow("", self.chk_vd_record)
 
         self.txt_vd_app = QtWidgets.QLineEdit()
         self.txt_vd_app.setPlaceholderText("e.g. com.android.chrome or leave blank")
@@ -499,7 +543,7 @@ class ScrcpyMainWindow(QtWidgets.QMainWindow):
     # ─────────────────────────────────────────────────────────────
     def _setup_tab_camera(self):
         layout = QtWidgets.QVBoxLayout(self.tab_camera)
-        layout.setSpacing(14)
+        layout.setSpacing(12)
 
         # Presets Group
         grp_presets = QtWidgets.QGroupBox("Camera Presets")
@@ -520,7 +564,7 @@ class ScrcpyMainWindow(QtWidgets.QMainWindow):
         # Configuration Group
         grp_cfg = QtWidgets.QGroupBox("Webcam & Sensor Settings")
         form = QtWidgets.QFormLayout(grp_cfg)
-        form.setSpacing(10)
+        form.setSpacing(8)
 
         self.cmb_cam_res = QtWidgets.QComboBox()
         self.cmb_cam_res.addItems(["1920x1080", "1280x720", "3840x2160 (4K)", "640x480"])
@@ -534,11 +578,19 @@ class ScrcpyMainWindow(QtWidgets.QMainWindow):
         self.cmb_cam_bitrate.addItems(["8M", "12M", "16M", "4M"])
         form.addRow("Bitrate:", self.cmb_cam_bitrate)
 
+        # Camera Facing + Hardware ID Discovery
+        cam_id_box = QtWidgets.QHBoxLayout()
         self.cmb_cam_facing = QtWidgets.QComboBox()
         self.cmb_cam_facing.addItems(["back", "front"])
-        form.addRow("Camera Facing:", self.cmb_cam_facing)
+        cam_id_box.addWidget(self.cmb_cam_facing)
 
-        self.chk_cam_antilag = QtWidgets.QCheckBox("Anti-Lag / Zero Buffer (--v4l2-buffer=0)")
+        btn_detect_cams = QtWidgets.QPushButton("🔍 Detect Lenses")
+        btn_detect_cams.setToolTip("Query connected device for physical camera IDs and lenses")
+        btn_detect_cams.clicked.connect(self._detect_cameras)
+        cam_id_box.addWidget(btn_detect_cams)
+        form.addRow("Camera Sensor:", cam_id_box)
+
+        self.chk_cam_antilag = QtWidgets.QCheckBox("Anti-Lag / Zero Buffer (--v4l2-buffer=0) [Prevents frame backlog]")
         form.addRow("", self.chk_cam_antilag)
 
         # Virtual Webcam Device Node
@@ -555,12 +607,40 @@ class ScrcpyMainWindow(QtWidgets.QMainWindow):
         self.cmb_cam_fps.setCurrentText(fps)
         self.chk_cam_antilag.setChecked(antilag)
 
+    def _detect_cameras(self):
+        target = self._get_selected_serial()
+        cams = query_device_cameras(target)
+        if not cams:
+            QtWidgets.QMessageBox.information(
+                self, "Camera Detection", "No camera descriptions returned by scrcpy. The default 'front' / 'back' will be used."
+            )
+            return
+
+        dlg = QtWidgets.QDialog(self)
+        dlg.setWindowTitle("Detected Camera Sensors")
+        dlg.resize(550, 320)
+        d_layout = QtWidgets.QVBoxLayout(dlg)
+
+        lbl = QtWidgets.QLabel("Available lenses reported by device:")
+        lbl.setStyleSheet("font-weight: bold; color: #38bdf8;")
+        d_layout.addWidget(lbl)
+
+        txt = QtWidgets.QPlainTextEdit()
+        txt.setReadOnly(True)
+        txt.setPlainText("\n".join(cams))
+        d_layout.addWidget(txt)
+
+        btn_close = QtWidgets.QPushButton("Done")
+        btn_close.clicked.connect(dlg.accept)
+        d_layout.addWidget(btn_close)
+        dlg.exec()
+
     # ─────────────────────────────────────────────────────────────
     # TAB 4: SHORTCUTS & LOGS
     # ─────────────────────────────────────────────────────────────
     def _setup_tab_shortcuts(self):
         layout = QtWidgets.QVBoxLayout(self.tab_shortcuts)
-        layout.setSpacing(12)
+        layout.setSpacing(10)
 
         # Filter box
         filter_box = QtWidgets.QHBoxLayout()
@@ -632,6 +712,55 @@ class ScrcpyMainWindow(QtWidgets.QMainWindow):
         dlg.exec()
 
     # ─────────────────────────────────────────────────────────────
+    # DRAG & DROP APK INSTALL & FILE PUSH
+    # ─────────────────────────────────────────────────────────────
+    def dragEnterEvent(self, event: QtGui.QDragEnterEvent):
+        if event.mimeData().hasUrls():
+            event.acceptProposedAction()
+
+    def dropEvent(self, event: QtGui.QDropEvent):
+        urls = event.mimeData().urls()
+        if not urls:
+            return
+
+        target = self._get_selected_serial()
+        for url in urls:
+            path = url.toLocalFile()
+            if not path or not os.path.exists(path):
+                continue
+
+            if path.lower().endswith(".apk"):
+                reply = QtWidgets.QMessageBox.question(
+                    self,
+                    "Install APK",
+                    f"Do you want to install '{os.path.basename(path)}' on the connected device?",
+                    QtWidgets.QMessageBox.StandardButton.Yes | QtWidgets.QMessageBox.StandardButton.No,
+                )
+                if reply == QtWidgets.QMessageBox.StandardButton.Yes:
+                    self.lbl_status.setText("● Installing APK...")
+                    succ, msg = install_apk(path, target)
+                    if succ:
+                        QtWidgets.QMessageBox.information(self, "APK Installed", msg)
+                    else:
+                        QtWidgets.QMessageBox.critical(self, "Install Failed", msg)
+                    self.lbl_status.setText("● Ready")
+            else:
+                reply = QtWidgets.QMessageBox.question(
+                    self,
+                    "Push File",
+                    f"Push '{os.path.basename(path)}' to /sdcard/Download/ on device?",
+                    QtWidgets.QMessageBox.StandardButton.Yes | QtWidgets.QMessageBox.StandardButton.No,
+                )
+                if reply == QtWidgets.QMessageBox.StandardButton.Yes:
+                    self.lbl_status.setText("● Pushing file...")
+                    succ, msg = push_file(path, "/sdcard/Download/", target)
+                    if succ:
+                        QtWidgets.QMessageBox.information(self, "File Pushed", msg)
+                    else:
+                        QtWidgets.QMessageBox.critical(self, "Push Failed", msg)
+                    self.lbl_status.setText("● Ready")
+
+    # ─────────────────────────────────────────────────────────────
     # EXECUTION & COMMAND BUILDING
     # ─────────────────────────────────────────────────────────────
     def _build_command_for_active_tab(self) -> List[str]:
@@ -642,27 +771,46 @@ class ScrcpyMainWindow(QtWidgets.QMainWindow):
         if target_serial:
             cmd.append(f"--serial={target_serial}")
 
+        # Helper for record file
+        def _get_record_arg() -> str:
+            videos_dir = Path.home() / "Videos"
+            videos_dir.mkdir(parents=True, exist_ok=True)
+            timestamp = time.strftime("%Y%m%d_%H%M%S")
+            return str(videos_dir / f"scrcpy_{timestamp}.mp4")
+
         if current_idx == 0:
             # ── Tab 0: Screen Mirroring ──
-            fps = self.cmb_mirror_fps.currentText().split()[0]
-            if fps != "0":
-                cmd.append(f"--max-fps={fps}")
-
-            cmd.append(f"--video-bit-rate={self.cmb_mirror_bitrate.currentText()}")
-
-            if self.chk_mirror_stay_awake.isChecked():
-                cmd.append("--stay-awake")
-
-            if self.chk_mirror_audio.isChecked():
-                cmd.append("--audio-source=output")
+            if self.chk_mirror_otg.isChecked():
+                cmd.append("--otg")
             else:
-                cmd.append("--no-audio")
+                fps = self.cmb_mirror_fps.currentText().split()[0]
+                if fps != "0":
+                    cmd.append(f"--max-fps={fps}")
 
-            if self.chk_mirror_turn_off.isChecked():
-                cmd.append("--turn-screen-off")
+                cmd.append(f"--video-bit-rate={self.cmb_mirror_bitrate.currentText()}")
 
-            if self.chk_mirror_fullscreen.isChecked():
-                cmd.append("-f")
+                if self.chk_mirror_stay_awake.isChecked():
+                    cmd.append("--stay-awake")
+
+                if self.chk_mirror_audio.isChecked():
+                    cmd.append("--audio-source=output")
+                else:
+                    cmd.append("--no-audio")
+
+                if self.chk_mirror_turn_off.isChecked():
+                    cmd.append("--turn-screen-off")
+
+                if self.chk_mirror_fullscreen.isChecked():
+                    cmd.append("-f")
+
+                if self.chk_mirror_hid_kb.isChecked():
+                    cmd.append("--keyboard=uhid")
+
+                if self.chk_mirror_hid_mouse.isChecked():
+                    cmd.append("--mouse=uhid")
+
+                if self.chk_mirror_record.isChecked():
+                    cmd.append(f"--record={_get_record_arg()}")
 
         elif current_idx == 1:
             # ── Tab 1: Virtual Display ──
@@ -689,6 +837,12 @@ class ScrcpyMainWindow(QtWidgets.QMainWindow):
                 cmd.append("--audio-source=output")
             else:
                 cmd.append("--no-audio")
+
+            if self.chk_vd_hid_kb.isChecked():
+                cmd.append("--keyboard=uhid")
+
+            if self.chk_vd_record.isChecked():
+                cmd.append(f"--record={_get_record_arg()}")
 
             cmd.append(f"--video-bit-rate={self.cmb_vd_bitrate.currentText()}")
 
@@ -734,7 +888,6 @@ class ScrcpyMainWindow(QtWidgets.QMainWindow):
     @Slot(str)
     def _append_log(self, line: str):
         self.txt_logs.appendPlainText(line.rstrip())
-        # Auto-scroll to end
         sb = self.txt_logs.verticalScrollBar()
         sb.setValue(sb.maximum())
 
@@ -761,7 +914,7 @@ class ScrcpyMainWindow(QtWidgets.QMainWindow):
         self.log_widget.setVisible(not self.log_widget.isVisible())
 
     # ─────────────────────────────────────────────────────────────
-    # DEVICE MANAGEMENT & CONFIG PERSISTENCE
+    # DEVICE MANAGEMENT, WI-FI MANAGER & CONFIG PERSISTENCE
     # ─────────────────────────────────────────────────────────────
     def _refresh_devices(self):
         self.cmb_devices.clear()
@@ -773,7 +926,6 @@ class ScrcpyMainWindow(QtWidgets.QMainWindow):
         for d in devices:
             self.cmb_devices.addItem(d.get("display_name", d["serial"]), d["serial"])
 
-        # Check if saved device matches
         saved = self.config.get("selected_device", "")
         if saved:
             idx = self.cmb_devices.findData(saved)
@@ -786,17 +938,79 @@ class ScrcpyMainWindow(QtWidgets.QMainWindow):
         data = self.cmb_devices.currentData()
         return data if data else None
 
-    def _dialog_wifi_connect(self):
-        ip_addr, ok = QtWidgets.QInputDialog.getText(
-            self, "Connect via Wi-Fi", "Enter Device IP:PORT (e.g. 192.0.2.1:5555):"
-        )
-        if ok and ip_addr.strip():
-            succ, msg = connect_wireless(ip_addr.strip())
+    def _restart_adb_daemon(self):
+        self.lbl_status.setText("● Restarting ADB server...")
+        succ, msg = restart_adb_server()
+        if succ:
+            QtWidgets.QMessageBox.information(self, "ADB Restart", "ADB server successfully restarted.")
+            self._refresh_devices()
+        else:
+            QtWidgets.QMessageBox.critical(self, "ADB Error", msg)
+        self.lbl_status.setText("● Ready")
+
+    def _dialog_wifi_manager(self):
+        """Unified Wi-Fi connection and Android 11+ pairing manager dialog."""
+        dlg = QtWidgets.QDialog(self)
+        dlg.setWindowTitle("ADB Wireless Manager")
+        dlg.resize(460, 280)
+        d_layout = QtWidgets.QVBoxLayout(dlg)
+
+        tabs = QtWidgets.QTabWidget()
+
+        # Tab 1: Connect
+        w_connect = QtWidgets.QWidget()
+        c_layout = QtWidgets.QFormLayout(w_connect)
+        txt_conn_ip = QtWidgets.QLineEdit()
+        txt_conn_ip.setPlaceholderText("e.g. 192.0.2.1:5555")
+        c_layout.addRow("Device IP:Port:", txt_conn_ip)
+        btn_do_connect = QtWidgets.QPushButton("Connect")
+        c_layout.addRow("", btn_do_connect)
+        tabs.addTab(w_connect, "Connect (Standard)")
+
+        # Tab 2: Pair (Android 11+)
+        w_pair = QtWidgets.QWidget()
+        p_layout = QtWidgets.QFormLayout(w_pair)
+        txt_pair_ip = QtWidgets.QLineEdit()
+        txt_pair_ip.setPlaceholderText("e.g. 192.0.2.1:37123 (from Pairing screen)")
+        p_layout.addRow("Pairing IP:Port:", txt_pair_ip)
+        txt_pair_code = QtWidgets.QLineEdit()
+        txt_pair_code.setPlaceholderText("e.g. 123456 (6-digit code)")
+        p_layout.addRow("Pairing Code:", txt_pair_code)
+        btn_do_pair = QtWidgets.QPushButton("Pair & Auto-Connect")
+        p_layout.addRow("", btn_do_pair)
+        tabs.addTab(w_pair, "Pair New Device (Android 11+)")
+
+        d_layout.addWidget(tabs)
+
+        btn_close = QtWidgets.QPushButton("Close")
+        btn_close.clicked.connect(dlg.accept)
+        d_layout.addWidget(btn_close)
+
+        def _handle_connect():
+            addr = txt_conn_ip.text().strip()
+            succ, msg = connect_wireless(addr)
             if succ:
-                QtWidgets.QMessageBox.information(self, "Wi-Fi Connected", msg)
+                QtWidgets.QMessageBox.information(dlg, "Connected", msg)
                 self._refresh_devices()
+                dlg.accept()
             else:
-                QtWidgets.QMessageBox.critical(self, "Connection Error", msg)
+                QtWidgets.QMessageBox.critical(dlg, "Connection Failed", msg)
+
+        def _handle_pair():
+            addr = txt_pair_ip.text().strip()
+            code = txt_pair_code.text().strip()
+            succ, msg = pair_wireless(addr, code)
+            if succ:
+                QtWidgets.QMessageBox.information(dlg, "Pairing Successful", f"{msg}\nNow connecting...")
+                self._refresh_devices()
+                dlg.accept()
+            else:
+                QtWidgets.QMessageBox.critical(dlg, "Pairing Failed", msg)
+
+        btn_do_connect.clicked.connect(_handle_connect)
+        btn_do_pair.clicked.connect(_handle_pair)
+
+        dlg.exec()
 
     def _load_saved_preferences(self):
         c = self.config
@@ -807,6 +1021,10 @@ class ScrcpyMainWindow(QtWidgets.QMainWindow):
         self.chk_mirror_audio.setChecked(c.get("mirror_audio", True))
         self.chk_mirror_turn_off.setChecked(c.get("mirror_turn_screen_off", False))
         self.chk_mirror_fullscreen.setChecked(c.get("mirror_fullscreen", False))
+        self.chk_mirror_hid_kb.setChecked(c.get("mirror_hid_keyboard", False))
+        self.chk_mirror_hid_mouse.setChecked(c.get("mirror_hid_mouse", False))
+        self.chk_mirror_otg.setChecked(c.get("mirror_otg", False))
+        self.chk_mirror_record.setChecked(c.get("mirror_record", False))
 
         # Virtual Display
         self.cmb_vd_res.setCurrentText(c.get("vd_resolution", "1920x1080"))
@@ -814,6 +1032,8 @@ class ScrcpyMainWindow(QtWidgets.QMainWindow):
         self.chk_vd_keep_active.setChecked(c.get("vd_keep_active", True))
         self.chk_vd_audio.setChecked(c.get("vd_audio", True))
         self.chk_vd_destroy.setChecked(c.get("vd_destroy_content", False))
+        self.chk_vd_hid_kb.setChecked(c.get("vd_hid_keyboard", False))
+        self.chk_vd_record.setChecked(c.get("vd_record", False))
         self.cmb_vd_bitrate.setCurrentText(c.get("vd_bitrate", "16M"))
         self.txt_vd_app.setText(c.get("vd_app", ""))
 
@@ -841,12 +1061,18 @@ class ScrcpyMainWindow(QtWidgets.QMainWindow):
         c["mirror_audio"] = self.chk_mirror_audio.isChecked()
         c["mirror_turn_screen_off"] = self.chk_mirror_turn_off.isChecked()
         c["mirror_fullscreen"] = self.chk_mirror_fullscreen.isChecked()
+        c["mirror_hid_keyboard"] = self.chk_mirror_hid_kb.isChecked()
+        c["mirror_hid_mouse"] = self.chk_mirror_hid_mouse.isChecked()
+        c["mirror_otg"] = self.chk_mirror_otg.isChecked()
+        c["mirror_record"] = self.chk_mirror_record.isChecked()
 
         c["vd_resolution"] = self.cmb_vd_res.currentText()
         c["vd_flex"] = self.chk_vd_flex.isChecked()
         c["vd_keep_active"] = self.chk_vd_keep_active.isChecked()
         c["vd_audio"] = self.chk_vd_audio.isChecked()
         c["vd_destroy_content"] = self.chk_vd_destroy.isChecked()
+        c["vd_hid_keyboard"] = self.chk_vd_hid_kb.isChecked()
+        c["vd_record"] = self.chk_vd_record.isChecked()
         c["vd_bitrate"] = self.cmb_vd_bitrate.currentText()
         c["vd_app"] = self.txt_vd_app.text().strip()
 
