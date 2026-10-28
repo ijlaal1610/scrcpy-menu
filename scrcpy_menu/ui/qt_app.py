@@ -1104,12 +1104,7 @@ class ScrcpyMainWindow(QtWidgets.QMainWindow):
 
 
 def run_qt_app() -> int:
-    """Launch Qt Application with anti-flickering Wayland & desktop engine."""
-    # Prevent Wayland sub-surface tearing and repainting flicker on Linux
-    if sys.platform.startswith("linux"):
-        if "QT_WAYLAND_DISABLE_WINDOWDECORATION" not in os.environ:
-            os.environ["QT_WAYLAND_DISABLE_WINDOWDECORATION"] = "1"
-
+    """Launch Qt Application."""
     app = QtWidgets.QApplication(sys.argv)
     app.setStyle("Fusion")
 
