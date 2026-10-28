@@ -38,6 +38,7 @@ from ..core.desktop_mode import (
 from ..core.capabilities import get_scrcpy_version_info, generate_system_diagnostics
 from ..core.process import ScrcpyProcessManager
 from ..platform_adapters import get_platform_adapter
+from .. import __version__
 
 DARK_STYLESHEET = """
 QMainWindow, QDialog, QWidget#central_widget {
@@ -154,16 +155,49 @@ QLineEdit, QComboBox, QSpinBox {
     padding: 6px 10px;
     color: #f8fafc;
     selection-background-color: #0284c7;
+    min-height: 20px;
 }
 QLineEdit:focus, QComboBox:focus, QSpinBox:focus {
     border: 1px solid #38bdf8;
 }
+QComboBox {
+    combobox-popup: 0;
+    padding-right: 24px;
+}
+QComboBox::drop-down {
+    subcontrol-origin: padding;
+    subcontrol-position: top right;
+    width: 22px;
+    border-left: 1px solid #2e3648;
+    border-top-right-radius: 6px;
+    border-bottom-right-radius: 6px;
+}
+QComboBox::down-arrow {
+    width: 0;
+    height: 0;
+    border-left: 4px solid transparent;
+    border-right: 4px solid transparent;
+    border-top: 5px solid #94a3b8;
+    margin-right: 2px;
+}
 QComboBox QAbstractItemView {
-    background-color: #121418;
-    border: 1px solid #2e3648;
-    selection-background-color: #242c3d;
-    selection-color: #38bdf8;
+    background-color: #171a21;
+    border: 1px solid #334155;
+    border-radius: 6px;
+    selection-background-color: #0284c7;
+    selection-color: #ffffff;
     color: #f8fafc;
+    padding: 4px;
+    outline: none;
+}
+QComboBox QAbstractItemView::item {
+    min-height: 26px;
+    padding: 4px 8px;
+    border-radius: 4px;
+}
+QComboBox QAbstractItemView::item:hover {
+    background-color: #242c3d;
+    color: #38bdf8;
 }
 QTextEdit, QPlainTextEdit {
     background-color: #0d0f13;
@@ -186,13 +220,41 @@ QHeaderView::section {
     border: 1px solid #242c3d;
     font-weight: 600;
 }
+QScrollArea {
+    background-color: transparent;
+    border: none;
+}
 QScrollBar:vertical {
     background: #121418;
-    width: 10px;
+    width: 8px;
+    margin: 0px;
 }
 QScrollBar::handle:vertical {
-    background: #242c3d;
+    background: #334155;
     border-radius: 4px;
+    min-height: 20px;
+}
+QScrollBar::handle:vertical:hover {
+    background: #0284c7;
+}
+QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
+    height: 0px;
+}
+QScrollBar:horizontal {
+    background: #121418;
+    height: 8px;
+    margin: 0px;
+}
+QScrollBar::handle:horizontal {
+    background: #334155;
+    border-radius: 4px;
+    min-width: 20px;
+}
+QScrollBar::handle:horizontal:hover {
+    background: #0284c7;
+}
+QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {
+    width: 0px;
 }
 """
 
@@ -206,8 +268,8 @@ class ScrcpyMainWindow(QtWidgets.QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Scrcpy Control Center")
-        self.resize(920, 750)
-        self.setMinimumSize(800, 620)
+        self.resize(880, 680)
+        self.setMinimumSize(640, 480)
         self.setAcceptDrops(True)
 
         self.config = load_config()
@@ -225,28 +287,45 @@ class ScrcpyMainWindow(QtWidgets.QMainWindow):
         self._load_saved_preferences()
         self._refresh_devices()
 
+    def _create_tab_scroll_container(self, widget: QtWidgets.QWidget) -> QtWidgets.QScrollArea:
+        scroll = QtWidgets.QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        scroll.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        scroll.setStyleSheet("QScrollArea { background-color: transparent; border: none; }")
+        scroll.setWidget(widget)
+        return scroll
+
     def _setup_ui(self):
         self.setStyleSheet(DARK_STYLESHEET)
         central = QtWidgets.QWidget()
         central.setObjectName("central_widget")
         self.setCentralWidget(central)
         main_layout = QtWidgets.QVBoxLayout(central)
-        main_layout.setContentsMargins(16, 16, 16, 16)
-        main_layout.setSpacing(12)
+        main_layout.setContentsMargins(14, 14, 14, 14)
+        main_layout.setSpacing(10)
 
         # ── Header Bar ──
         header_layout = QtWidgets.QHBoxLayout()
 
-        # Title & Version Badge
+        # Title & Distinct Version Badges (App Version vs Scrcpy Core)
         title_box = QtWidgets.QHBoxLayout()
+        title_box.setSpacing(8)
         lbl_app = QtWidgets.QLabel("Scrcpy Control Center")
         lbl_app.setStyleSheet("font-size: 17px; font-weight: 800; color: #38bdf8;")
         title_box.addWidget(lbl_app)
 
-        v_str = self.capabilities.get("version_str", "Unknown")
-        lbl_badge = QtWidgets.QLabel(f"v{v_str}")
-        lbl_badge.setStyleSheet("background-color: #1e293b; color: #38bdf8; border-radius: 4px; padding: 2px 6px; font-weight: bold;")
-        title_box.addWidget(lbl_badge)
+        lbl_app_ver = QtWidgets.QLabel(f"v{__version__}")
+        lbl_app_ver.setToolTip(f"Scrcpy Control Center Application Version {__version__}")
+        lbl_app_ver.setStyleSheet("background-color: #0284c7; color: #ffffff; border-radius: 4px; padding: 2px 7px; font-weight: bold; font-size: 11px;")
+        title_box.addWidget(lbl_app_ver)
+
+        v_core = self.capabilities.get("version_str", "Unknown")
+        lbl_core_badge = QtWidgets.QLabel(f"scrcpy core: v{v_core}")
+        lbl_core_badge.setToolTip("Detected system scrcpy binary version")
+        lbl_core_badge.setStyleSheet("background-color: #1e293b; color: #94a3b8; border: 1px solid #334155; border-radius: 4px; padding: 2px 6px; font-size: 11px;")
+        title_box.addWidget(lbl_core_badge)
         header_layout.addLayout(title_box)
 
         header_layout.addStretch()
@@ -257,7 +336,7 @@ class ScrcpyMainWindow(QtWidgets.QMainWindow):
         header_layout.addWidget(lbl_dev)
 
         self.cmb_devices = QtWidgets.QComboBox()
-        self.cmb_devices.setMinimumWidth(230)
+        self.cmb_devices.setMinimumWidth(220)
         header_layout.addWidget(self.cmb_devices)
 
         btn_refresh_dev = QtWidgets.QPushButton("🔄 Refresh")
@@ -276,7 +355,7 @@ class ScrcpyMainWindow(QtWidgets.QMainWindow):
 
         main_layout.addLayout(header_layout)
 
-        # ── Tab Widget ──
+        # ── Tab Widget with Scrollable Containers ──
         self.tabs = QtWidgets.QTabWidget()
         self.tab_mirror = QtWidgets.QWidget()
         self.tab_mirror.setObjectName("tab_mirror")
@@ -292,9 +371,9 @@ class ScrcpyMainWindow(QtWidgets.QMainWindow):
         self._setup_tab_camera()
         self._setup_tab_shortcuts()
 
-        self.tabs.addTab(self.tab_mirror, "📱 Screen Mirroring")
-        self.tabs.addTab(self.tab_vd, "🖥️ Virtual Display")
-        self.tabs.addTab(self.tab_camera, "📷 Camera / Webcam")
+        self.tabs.addTab(self._create_tab_scroll_container(self.tab_mirror), "📱 Screen Mirroring")
+        self.tabs.addTab(self._create_tab_scroll_container(self.tab_vd), "🖥️ Virtual Display")
+        self.tabs.addTab(self._create_tab_scroll_container(self.tab_camera), "📷 Camera / Webcam")
         self.tabs.addTab(self.tab_shortcuts, "⌨️ Shortcuts & Logs")
 
         main_layout.addWidget(self.tabs, stretch=1)
@@ -307,7 +386,7 @@ class ScrcpyMainWindow(QtWidgets.QMainWindow):
 
         bottom_box.addStretch()
 
-        self.btn_toggle_log = QtWidgets.QPushButton("📋 Toggle Log Panel")
+        self.btn_toggle_log = QtWidgets.QPushButton("📋 Show Logs")
         self.btn_toggle_log.clicked.connect(self._toggle_log_panel)
         bottom_box.addWidget(self.btn_toggle_log)
 
@@ -344,7 +423,12 @@ class ScrcpyMainWindow(QtWidgets.QMainWindow):
         self.txt_logs.setMaximumHeight(140)
         log_layout.addWidget(self.txt_logs)
 
+        self.log_widget.setVisible(False)
         main_layout.addWidget(self.log_widget)
+
+        # Ensure all combobox popups have a bounded height and smooth scrolling
+        for cmb in self.findChildren(QtWidgets.QComboBox):
+            cmb.setMaxVisibleItems(8)
 
     # ─────────────────────────────────────────────────────────────
     # ─────────────────────────────────────────────────────────────
@@ -1269,6 +1353,8 @@ class ScrcpyMainWindow(QtWidgets.QMainWindow):
         else:
             self.lbl_status.setText(f"● Process Exited ({return_code})")
             self.lbl_status.setStyleSheet("color: #ef4444; font-weight: bold;")
+            self.log_widget.setVisible(True)
+            self.btn_toggle_log.setText("📋 Hide Logs")
 
     def _copy_logs(self):
         QtWidgets.QApplication.clipboard().setText(self.txt_logs.toPlainText())
@@ -1278,7 +1364,9 @@ class ScrcpyMainWindow(QtWidgets.QMainWindow):
         self.proc_manager.clear_logs()
 
     def _toggle_log_panel(self):
-        self.log_widget.setVisible(not self.log_widget.isVisible())
+        is_vis = not self.log_widget.isVisible()
+        self.log_widget.setVisible(is_vis)
+        self.btn_toggle_log.setText("📋 Hide Logs" if is_vis else "📋 Show Logs")
 
     # ─────────────────────────────────────────────────────────────
     # DEVICE MANAGEMENT, WI-FI MANAGER & CONFIG PERSISTENCE

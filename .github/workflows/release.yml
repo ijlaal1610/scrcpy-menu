@@ -12,7 +12,7 @@ on:
         description: 'Release Tag (used if publishing release)'
         required: false
         type: string
-        default: 'v2.0.0'
+        default: 'v1.0.0'
   push:
     tags:
       - 'v*'
