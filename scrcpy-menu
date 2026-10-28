@@ -10,6 +10,30 @@ import os
 import sys
 import subprocess
 import signal
+import json
+
+CONFIG_FILE = os.path.expanduser("~/.config/scrcpy-menu/config.json")
+
+
+def load_config():
+    """Load saved settings dictionary from JSON configuration file."""
+    if os.path.exists(CONFIG_FILE):
+        try:
+            with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            return {}
+    return {}
+
+
+def save_config(cfg):
+    """Save settings dictionary to JSON configuration file."""
+    try:
+        os.makedirs(os.path.dirname(CONFIG_FILE), exist_ok=True)
+        with open(CONFIG_FILE, "w", encoding="utf-8") as f:
+            json.dump(cfg, f, indent=2)
+    except Exception:
+        pass
 
 # Check for GUI environment
 GUI_AVAILABLE = False
@@ -443,6 +467,17 @@ if GUI_AVAILABLE and "--cli" not in sys.argv:
             lbl_vd_features.set_xalign(0)
             vd_box.pack_start(lbl_vd_features, False, False, 0)
 
+            # Force Desktop Mode (Phone default display vs Desktop mode)
+            self.chk_vd_force_desktop = Gtk.CheckButton(label="Force Desktop Mode on Virtual Display (uncheck for standard phone UI)")
+            self.chk_vd_force_desktop.set_active(True)
+            self.chk_vd_force_desktop.connect("toggled", self.on_vd_force_desktop_toggled)
+            row_force_dt = make_option_row(
+                self.chk_vd_force_desktop,
+                "Force Desktop Mode: When checked, enables Android freeform windows and desktop mode on the virtual display. "
+                "When unchecked, Android treats the virtual display as a standard phone display (running the normal phone UI/launcher)."
+            )
+            vd_box.pack_start(row_force_dt, False, False, 0)
+
             # Flex Display
             self.chk_vd_flex = Gtk.CheckButton(label="Flex Display — resize window resizes virtual screen (-x)")
             self.chk_vd_flex.set_active(True)
@@ -739,6 +774,7 @@ if GUI_AVAILABLE and "--cli" not in sys.argv:
 
             self.connect("destroy", self.on_destroy)
             self.refresh_devices()
+            self.load_settings()
 
             # Poll process status every second
             GLib.timeout_add(1000, self.check_process_status)
@@ -794,6 +830,15 @@ if GUI_AVAILABLE and "--cli" not in sys.argv:
         def on_vd_app_changed(self, combo):
             """Toggle custom package entry visibility."""
             self.entry_vd_custom_pkg.set_sensitive(combo.get_active_id() == "custom_pkg")
+
+        def on_vd_force_desktop_toggled(self, widget):
+            """Sync Android desktop mode ADB flags when user toggles the switch."""
+            enable = widget.get_active()
+            val_desc = "desktop mode" if enable else "standard phone mode"
+            self.status_label.set_text(f"Configuring Android for {val_desc} via ADB...")
+            set_desktop_mode(enable)
+            self.update_desktop_mode_status()
+            self.status_label.set_text(f"Set to {val_desc}. Note: reboot phone if changing mode for first time.")
 
         def on_reload_apps_clicked(self, widget):
             """Scan device for installed apps and populate the combo."""
@@ -912,6 +957,10 @@ if GUI_AVAILABLE and "--cli" not in sys.argv:
 
             elif current_page == 2:
                 # Virtual Display Mode
+                # Sync desktop mode vs standard phone mode
+                force_dt = self.chk_vd_force_desktop.get_active()
+                set_desktop_mode(force_dt)
+
                 vd_res = self.combo_vd_res.get_active_id()
                 vd_dpi = self.combo_vd_dpi.get_active_id()
 
@@ -987,6 +1036,7 @@ if GUI_AVAILABLE and "--cli" not in sys.argv:
                     cmd.append(f"--max-fps={vd_fps}")
 
             try:
+                self.save_settings()
                 self.manager.start(cmd)
                 self.status_label.set_text(f"Running: {' '.join(cmd)}")
                 self.btn_launch.set_sensitive(False)
@@ -1007,7 +1057,131 @@ if GUI_AVAILABLE and "--cli" not in sys.argv:
                 self.btn_stop.set_sensitive(False)
             return True
 
+        def save_settings(self):
+            """Save all current UI controls to the JSON configuration file."""
+            cfg = {
+                "active_tab": self.notebook.get_current_page(),
+                # Camera Tab
+                "cam_id": self.combo_cam.get_active_id() or "0",
+                "cam_res": self.combo_cam_res.get_active_id() or "1920x1080",
+                "cam_fps": self.combo_cam_fps.get_active_id() or "30",
+                "v4l2_device": self.entry_v4l2.get_text().strip(),
+                "cam_v4l2": self.chk_cam_v4l2.get_active(),
+                "cam_preview": self.chk_cam_preview.get_active(),
+                "cam_no_audio": self.chk_cam_no_audio.get_active(),
+                "cam_zero_buf": self.chk_cam_zero_buf.get_active(),
+                "cam_bitrate": self.chk_cam_bitrate.get_active(),
+                # Screen Mirror Tab
+                "screen_fps": self.combo_screen_fps.get_active_id() or "120",
+                "screen_res": self.combo_screen_res.get_active_id() or "0",
+                "screen_stay_awake": self.chk_screen_stay_awake.get_active(),
+                "screen_audio": self.chk_screen_audio.get_active(),
+                "screen_v4l2": self.chk_screen_v4l2.get_active(),
+                "screen_off": self.chk_screen_off.get_active(),
+                "screen_zero_buf": self.chk_screen_zero_buf.get_active(),
+                # Virtual Display Tab
+                "vd_res": self.combo_vd_res.get_active_id() or "1920x1080",
+                "vd_custom_res": self.entry_vd_custom_res.get_text().strip(),
+                "vd_dpi": self.combo_vd_dpi.get_active_id() or "default",
+                "vd_app": self.combo_vd_app.get_active_id() or "none",
+                "vd_custom_pkg": self.entry_vd_custom_pkg.get_text().strip(),
+                "vd_force_stop": self.chk_vd_force_stop.get_active(),
+                "vd_force_desktop": self.chk_vd_force_desktop.get_active(),
+                "vd_flex": self.chk_vd_flex.get_active(),
+                "vd_keep_active": self.chk_vd_keep_active.get_active(),
+                "vd_no_decor": self.chk_vd_no_decor.get_active(),
+                "vd_no_destroy": self.chk_vd_no_destroy.get_active(),
+                "vd_audio": self.chk_vd_audio.get_active(),
+                "vd_stay_awake": self.chk_vd_stay_awake.get_active(),
+                "vd_screen_off": self.chk_vd_screen_off.get_active(),
+                "vd_codec": self.combo_vd_codec.get_active_id() or "h264",
+                "vd_bitrate": self.combo_vd_bitrate.get_active_id() or "8M",
+                "vd_fps": self.combo_vd_fps.get_active_id() or "60",
+            }
+            save_config(cfg)
+
+        def load_settings(self):
+            """Restore previously saved UI controls from JSON configuration file."""
+            cfg = load_config()
+            if not cfg:
+                return
+
+            def set_combo(combo, val):
+                if val:
+                    combo.set_active_id(str(val))
+
+            # Camera
+            set_combo(self.combo_cam, cfg.get("cam_id"))
+            set_combo(self.combo_cam_res, cfg.get("cam_res"))
+            set_combo(self.combo_cam_fps, cfg.get("cam_fps"))
+            if "v4l2_device" in cfg:
+                self.entry_v4l2.set_text(cfg["v4l2_device"])
+            if "cam_v4l2" in cfg:
+                self.chk_cam_v4l2.set_active(cfg["cam_v4l2"])
+            if "cam_preview" in cfg:
+                self.chk_cam_preview.set_active(cfg["cam_preview"])
+            if "cam_no_audio" in cfg:
+                self.chk_cam_no_audio.set_active(cfg["cam_no_audio"])
+            if "cam_zero_buf" in cfg:
+                self.chk_cam_zero_buf.set_active(cfg["cam_zero_buf"])
+            if "cam_bitrate" in cfg:
+                self.chk_cam_bitrate.set_active(cfg["cam_bitrate"])
+
+            # Screen Mirror
+            set_combo(self.combo_screen_fps, cfg.get("screen_fps"))
+            set_combo(self.combo_screen_res, cfg.get("screen_res"))
+            if "screen_stay_awake" in cfg:
+                self.chk_screen_stay_awake.set_active(cfg["screen_stay_awake"])
+            if "screen_audio" in cfg:
+                self.chk_screen_audio.set_active(cfg["screen_audio"])
+            if "screen_v4l2" in cfg:
+                self.chk_screen_v4l2.set_active(cfg["screen_v4l2"])
+            if "screen_off" in cfg:
+                self.chk_screen_off.set_active(cfg["screen_off"])
+            if "screen_zero_buf" in cfg:
+                self.chk_screen_zero_buf.set_active(cfg["screen_zero_buf"])
+
+            # Virtual Display
+            set_combo(self.combo_vd_res, cfg.get("vd_res"))
+            if "vd_custom_res" in cfg:
+                self.entry_vd_custom_res.set_text(cfg["vd_custom_res"])
+            self.on_vd_res_changed(self.combo_vd_res)
+
+            set_combo(self.combo_vd_dpi, cfg.get("vd_dpi"))
+            set_combo(self.combo_vd_app, cfg.get("vd_app"))
+            if "vd_custom_pkg" in cfg:
+                self.entry_vd_custom_pkg.set_text(cfg["vd_custom_pkg"])
+            self.on_vd_app_changed(self.combo_vd_app)
+
+            if "vd_force_stop" in cfg:
+                self.chk_vd_force_stop.set_active(cfg["vd_force_stop"])
+            if "vd_force_desktop" in cfg:
+                self.chk_vd_force_desktop.set_active(cfg["vd_force_desktop"])
+            if "vd_flex" in cfg:
+                self.chk_vd_flex.set_active(cfg["vd_flex"])
+            if "vd_keep_active" in cfg:
+                self.chk_vd_keep_active.set_active(cfg["vd_keep_active"])
+            if "vd_no_decor" in cfg:
+                self.chk_vd_no_decor.set_active(cfg["vd_no_decor"])
+            if "vd_no_destroy" in cfg:
+                self.chk_vd_no_destroy.set_active(cfg["vd_no_destroy"])
+            if "vd_audio" in cfg:
+                self.chk_vd_audio.set_active(cfg["vd_audio"])
+            if "vd_stay_awake" in cfg:
+                self.chk_vd_stay_awake.set_active(cfg["vd_stay_awake"])
+            if "vd_screen_off" in cfg:
+                self.chk_vd_screen_off.set_active(cfg["vd_screen_off"])
+
+            set_combo(self.combo_vd_codec, cfg.get("vd_codec"))
+            set_combo(self.combo_vd_bitrate, cfg.get("vd_bitrate"))
+            set_combo(self.combo_vd_fps, cfg.get("vd_fps"))
+
+            # Active Tab
+            if "active_tab" in cfg and isinstance(cfg["active_tab"], int):
+                self.notebook.set_current_page(cfg["active_tab"])
+
         def on_destroy(self, widget):
+            self.save_settings()
             self.manager.stop()
             Gtk.main_quit()
 
