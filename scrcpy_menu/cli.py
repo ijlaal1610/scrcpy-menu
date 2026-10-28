@@ -47,40 +47,63 @@ def validate_fps(val: str) -> bool:
 
 
 SHORTCUTS_LIST = [
-    ("MOD + f", "Toggle fullscreen"),
-    ("MOD + Left / Right", "Rotate display (90 degrees left / right)"),
-    ("MOD + g", "Resize window to 1:1 pixel mapping"),
-    ("MOD + w", "Resize window to remove black borders"),
-    ("MOD + h", "Home button (Android)"),
-    ("MOD + b / Backspace", "Back button (Android)"),
-    ("MOD + s", "App Switcher (Recents)"),
-    ("MOD + m", "Menu button"),
-    ("MOD + p", "Power button (turn screen on / off)"),
-    ("MOD + o", "Turn device physical screen off (keep mirroring)"),
-    ("MOD + Shift + o", "Turn device physical screen on"),
-    ("MOD + r", "Rotate device screen"),
-    ("MOD + n", "Expand notification panel"),
-    ("MOD + Shift + n", "Collapse notification panel"),
-    ("MOD + c", "Copy device clipboard to computer"),
-    ("MOD + v", "Paste computer clipboard to device"),
-    ("MOD + Shift + v", "Paste computer clipboard as raw key events"),
-    ("MOD + k", "Toggle physical keyboard simulation (UHID)"),
-    ("MOD + i", "Toggle mouse capture / pointer lock"),
-    ("MOD + Up / Down", "Volume Up / Volume Down"),
+    # Universal & Window Controls
+    ("MOD + f  or  F11", "Toggle fullscreen mode", "Window"),
+    ("MOD + w  or  Double-click", "Resize window to remove black borders", "Window"),
+    ("MOD + g", "Resize window to 1:1 pixel-perfect mapping", "Window"),
+    ("MOD + Left / Right", "Rotate display 90 degrees left / right", "Window"),
+    ("MOD + Shift + Left / Right", "Flip display horizontally (mirror effect)", "Window"),
+    ("MOD + Shift + Up / Down", "Flip display vertically", "Window"),
+    ("MOD + z", "Pause / freeze video stream", "Window"),
+    ("MOD + Shift + z", "Resume / unpause video stream", "Window"),
+    ("MOD + Shift + r", "Reset video capture & encoder pipeline", "Window"),
+    ("MOD + q", "Quit scrcpy session", "Window"),
+
+    # Navigation & Gestures
+    ("Right-click  or  MOD + b", "Back button (Android)", "Navigation"),
+    ("Middle-click or  MOD + h", "Home button (Android)", "Navigation"),
+    ("4th-click    or  MOD + s", "App Switcher (Recents)", "Navigation"),
+    ("5th-click    or  MOD + n", "Expand notification panel", "Navigation"),
+    ("MOD + Shift + n", "Collapse notification panel", "Navigation"),
+    ("MOD + m", "Menu button (Android)", "Navigation"),
+    ("MOD + Up / Down", "Volume UP / DOWN", "Navigation"),
+    ("Click & drag", "Touch / swipe gesture", "Navigation"),
+    ("Right-click & drag", "Pinch-to-zoom simulation", "Navigation"),
+    ("Mouse wheel", "Scroll list / webpage", "Navigation"),
+
+    # Power, Screen & Anti-Lag
+    ("MOD + o", "Turn physical phone screen OFF (saves battery & heat)", "Power/Screen"),
+    ("MOD + Shift + o", "Turn physical phone screen back ON", "Power/Screen"),
+    ("MOD + p", "Power key (wake/sleep phone)", "Power/Screen"),
+    ("Right-click (screen off)", "Wake phone screen on", "Power/Screen"),
+    ("MOD + r", "Rotate phone device orientation", "Power/Screen"),
+
+    # Hardware & Input
+    ("MOD + k", "Toggle physical keyboard simulation (UHID)", "Input"),
+    ("MOD + i", "Toggle mouse capture / pointer lock", "Input"),
+
+    # Clipboard & Drag-and-Drop
+    ("MOD + c", "Copy device clipboard to computer", "Clipboard"),
+    ("MOD + x", "Cut device text to computer", "Clipboard"),
+    ("MOD + v", "Paste computer clipboard to device", "Clipboard"),
+    ("MOD + Shift + v", "Paste computer clipboard as raw keystrokes", "Clipboard"),
+    ("Drag & drop APK", "Install APK onto phone directly", "Files"),
+    ("Drag & drop files", "Push files directly to /sdcard/Download/", "Files"),
 ]
 
 
 def print_shortcuts_table():
-    print("\n" + "=" * 65)
+    print("\n" + "=" * 70)
     print("      ⌨️  SCRCPY KEYBOARD & MOUSE SHORTCUTS REFERENCE")
-    print("=" * 65)
+    print("=" * 70)
     print("  Note: 'MOD' is Left-Alt (default) or Left-Super (Windows key)")
-    print("-" * 65)
-    print(f"  {'Shortcut':<24} {'Action'}")
-    print("-" * 65)
-    for sc, desc in SHORTCUTS_LIST:
-        print(f"  {sc:<24} {desc}")
-    print("=" * 65 + "\n")
+    print("-" * 70)
+    print(f"  {'Category':<14} {'Shortcut':<30} {'Action'}")
+    print("-" * 70)
+    for entry in SHORTCUTS_LIST:
+        sc, desc, cat = entry[0], entry[1], entry[2]
+        print(f"  {cat:<14} {sc:<30} {desc}")
+    print("=" * 70 + "\n")
 
 
 def select_target_device() -> Optional[str]:

@@ -34,11 +34,17 @@ jobs:
           - os: ubuntu-24.04
             asset_name: scrcpy-control-center-linux-x86_64
             executable_path: dist/scrcpy-control-center
+          - os: ubuntu-24.04-arm
+            asset_name: scrcpy-control-center-linux-aarch64
+            executable_path: dist/scrcpy-control-center
           - os: windows-latest
             asset_name: scrcpy-control-center-windows-x64.exe
             executable_path: dist/scrcpy-control-center.exe
           - os: macos-14
             asset_name: scrcpy-control-center-macos-arm64
+            executable_path: dist/scrcpy-control-center
+          - os: macos-15-intel
+            asset_name: scrcpy-control-center-macos-x86_64
             executable_path: dist/scrcpy-control-center
 
     steps:

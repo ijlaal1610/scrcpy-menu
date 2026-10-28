@@ -213,3 +213,24 @@ def query_device_encoders(device_serial: Optional[str] = None) -> List[str]:
         return encoders
     except Exception:
         return []
+
+
+def query_installed_packages(device_serial: Optional[str] = None) -> List[str]:
+    """Query third-party installed packages on the device via ADB."""
+    cmd = ["adb"]
+    if device_serial:
+        cmd.extend(["-s", device_serial])
+    cmd.extend(["shell", "pm", "list", "packages", "-3"])
+
+    try:
+        res = subprocess.run(cmd, capture_output=True, text=True, timeout=8, check=False)
+        pkgs = []
+        for line in res.stdout.splitlines():
+            line = line.strip()
+            if line.startswith("package:"):
+                pkg_name = line.replace("package:", "").strip()
+                if pkg_name:
+                    pkgs.append(pkg_name)
+        return sorted(pkgs)
+    except Exception:
+        return []
