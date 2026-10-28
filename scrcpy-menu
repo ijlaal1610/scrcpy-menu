@@ -1,0 +1,1257 @@
+#!/usr/bin/env python3
+"""
+Scrcpy Menu & Quick Control Launcher
+Supports Camera (Webcam mode up to 60fps), Screen Mirroring (up to 120fps),
+and Virtual Display (--new-display with flex, start-app, desktop mode),
+with individual Anti-Lag toggles and interactive hover tooltips.
+"""
+
+import os
+import sys
+import subprocess
+import signal
+
+# Check for GUI environment
+GUI_AVAILABLE = False
+if os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"):
+    try:
+        import gi
+        gi.require_version('Gtk', '3.0')
+        from gi.repository import Gtk, GLib
+        GUI_AVAILABLE = True
+    except Exception:
+        GUI_AVAILABLE = False
+
+
+class ScrcpyManager:
+    def __init__(self):
+        self.process = None
+
+    def is_running(self):
+        if self.process is None:
+            return False
+        return self.process.poll() is None
+
+    def start(self, cmd):
+        if self.is_running():
+            self.stop()
+        self.process = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            preexec_fn=os.setsid
+        )
+        return self.process
+
+    def stop(self):
+        if self.process and self.process.poll() is None:
+            try:
+                os.killpg(os.getpgid(self.process.pid), signal.SIGTERM)
+                self.process.wait(timeout=2)
+            except Exception:
+                try:
+                    os.killpg(os.getpgid(self.process.pid), signal.SIGKILL)
+                except Exception:
+                    pass
+        self.process = None
+
+
+def get_connected_devices():
+    try:
+        res = subprocess.run(["adb", "devices"], stdout=subprocess.PIPE, text=True, check=True)
+        lines = [line.split()[0] for line in res.stdout.strip().split("\n")[1:] if "\tdevice" in line]
+        return lines
+    except Exception:
+        return []
+
+
+def get_installed_apps():
+    """Retrieve list of installed apps from device via scrcpy --list-apps."""
+    try:
+        res = subprocess.run(
+            ["scrcpy", "--list-apps"],
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            text=True, timeout=15
+        )
+        apps = []
+        for line in res.stdout.splitlines():
+            line = line.strip()
+            if line.startswith("* "):
+                # Format: " * App Name                    com.package.name"
+                # Split on multiple spaces to separate name from package
+                parts = line[2:].rsplit(None, 1)
+                if len(parts) == 2:
+                    app_name, pkg = parts[0].strip(), parts[1].strip()
+                    apps.append((app_name, pkg))
+        return apps
+    except Exception:
+        return []
+
+
+DESKTOP_MODE_FLAGS = [
+    ("force_desktop_mode_on_external_displays", "Force desktop mode on external/virtual displays"),
+    ("enable_freeform_support", "Enable freeform (resizable) windows"),
+    ("force_resizable_activities", "Force all activities to be resizable"),
+    ("enable_non_resizable_multi_window", "Allow non-resizable apps in multi-window"),
+]
+
+
+def get_desktop_mode_status():
+    """Check current state of all desktop mode flags. Returns dict of flag -> bool."""
+    status = {}
+    for flag, _desc in DESKTOP_MODE_FLAGS:
+        try:
+            res = subprocess.run(
+                ["adb", "shell", "settings", "get", "global", flag],
+                stdout=subprocess.PIPE, text=True, timeout=3
+            )
+            val = res.stdout.strip()
+            status[flag] = (val == "1")
+        except Exception:
+            status[flag] = False
+    return status
+
+
+def set_desktop_mode(enable=True):
+    """Enable or disable all desktop mode flags via ADB. Returns (success, message)."""
+    val = "1" if enable else "0"
+    errors = []
+    for flag, _desc in DESKTOP_MODE_FLAGS:
+        try:
+            subprocess.run(
+                ["adb", "shell", "settings", "put", "global", flag, val],
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                text=True, timeout=3, check=True
+            )
+        except Exception as e:
+            errors.append(f"{flag}: {e}")
+    if errors:
+        return False, "Errors: " + "; ".join(errors)
+    action = "Enabled" if enable else "Disabled"
+    return True, f"{action} all desktop mode flags. A reboot may be needed for full effect."
+
+
+if GUI_AVAILABLE and "--cli" not in sys.argv:
+    def make_option_row(checkbox, tooltip_text, is_anti_lag=False):
+        """Creates a box with the checkbox and an info hover button."""
+        box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        checkbox.set_tooltip_text(tooltip_text)
+        box.pack_start(checkbox, True, True, 0)
+
+        info_btn = Gtk.Button(label="ℹ️")
+        info_btn.set_relief(Gtk.ReliefStyle.NONE)
+        info_btn.set_tooltip_text(tooltip_text)
+        info_btn.set_focus_on_click(False)
+        box.pack_end(info_btn, False, False, 0)
+        return box
+
+    class ScrcpyGui(Gtk.Window):
+        def __init__(self):
+            super().__init__(title="Scrcpy Control Center")
+            self.set_default_size(540, 680)
+            self.set_position(Gtk.WindowPosition.CENTER)
+            self.set_border_width(12)
+
+            self.manager = ScrcpyManager()
+
+            vbox = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+            self.add(vbox)
+
+            # Header / Device Status
+            header_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+            self.dev_label = Gtk.Label(label="Checking device...")
+            self.dev_label.set_xalign(0)
+            header_box.pack_start(self.dev_label, True, True, 0)
+
+            btn_refresh = Gtk.Button(label="🔄 Refresh")
+            btn_refresh.connect("clicked", self.refresh_devices)
+            header_box.pack_end(btn_refresh, False, False, 0)
+            vbox.pack_start(header_box, False, False, 0)
+
+            # Notebook for Tabs
+            notebook = Gtk.Notebook()
+            vbox.pack_start(notebook, True, True, 0)
+
+            # ================= TAB 1: CAMERA MODE =================
+            cam_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+            cam_box.set_border_width(8)
+
+            grid_cam = Gtk.Grid(column_spacing=12, row_spacing=8)
+            cam_box.pack_start(grid_cam, False, False, 0)
+
+            # Camera Selection
+            grid_cam.attach(Gtk.Label(label="Camera:", xalign=0), 0, 0, 1, 1)
+            self.combo_cam = Gtk.ComboBoxText()
+            # Populate dynamically when device is detected
+            self.populate_cameras()
+            grid_cam.attach(self.combo_cam, 1, 0, 1, 1)
+
+            # Camera Resolution
+            grid_cam.attach(Gtk.Label(label="Resolution:", xalign=0), 0, 1, 1, 1)
+            self.combo_cam_res = Gtk.ComboBoxText()
+            self.combo_cam_res.append("1920x1080", "1080p (1920x1080)")
+            self.combo_cam_res.append("1280x720", "720p (1280x720)")
+            self.combo_cam_res.append("2400x1080", "Ultrawide sensor crop (2400x1080)")
+            self.combo_cam_res.set_active(0)
+            grid_cam.attach(self.combo_cam_res, 1, 1, 1, 1)
+
+            # Camera FPS (Up to 60)
+            grid_cam.attach(Gtk.Label(label="Framerate:", xalign=0), 0, 2, 1, 1)
+            self.combo_cam_fps = Gtk.ComboBoxText()
+            self.combo_cam_fps.append("30", "30 FPS")
+            self.combo_cam_fps.append("60", "60 FPS (Ultra Smooth)")
+            self.combo_cam_fps.set_active(0)
+            grid_cam.attach(self.combo_cam_fps, 1, 2, 1, 1)
+
+            # V4L2 Device
+            grid_cam.attach(Gtk.Label(label="Virtual Webcam:", xalign=0), 0, 3, 1, 1)
+            self.entry_v4l2 = Gtk.Entry()
+            self.entry_v4l2.set_text("/dev/video2")
+            grid_cam.attach(self.entry_v4l2, 1, 3, 1, 1)
+
+            # Basic options
+            self.chk_cam_v4l2 = Gtk.CheckButton(label="Enable Virtual Webcam output (/dev/video2)")
+            self.chk_cam_v4l2.set_active(True)
+            cam_box.pack_start(self.chk_cam_v4l2, False, False, 0)
+
+            self.chk_cam_preview = Gtk.CheckButton(label="Show desktop preview window")
+            self.chk_cam_preview.set_active(True)
+            cam_box.pack_start(self.chk_cam_preview, False, False, 0)
+
+            # Section Separator & Header for Anti-Lag
+            sep = Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL)
+            cam_box.pack_start(sep, False, False, 4)
+
+            lbl_anti_lag_header = Gtk.Label()
+            lbl_anti_lag_header.set_markup("<b>⚡ Anti-Lag Settings (Hover ℹ️ for details):</b>")
+            lbl_anti_lag_header.set_xalign(0)
+            cam_box.pack_start(lbl_anti_lag_header, False, False, 0)
+
+            # 1. Anti-Lag: No Audio
+            self.chk_cam_no_audio = Gtk.CheckButton(label="[Anti-Lag] Disable audio forwarding (--no-audio)")
+            self.chk_cam_no_audio.set_active(True)
+            row_audio = make_option_row(
+                self.chk_cam_no_audio,
+                "Anti-Lag: Prevents audio/video clock drift from accumulating seconds of video delay over USB."
+            )
+            cam_box.pack_start(row_audio, False, False, 0)
+
+            # 2. Anti-Lag: Zero V4L2 buffer
+            self.chk_cam_zero_buf = Gtk.CheckButton(label="[Anti-Lag] Force zero V4L2 buffer (--v4l2-buffer=0)")
+            self.chk_cam_zero_buf.set_active(True)
+            row_buf = make_option_row(
+                self.chk_cam_zero_buf,
+                "Anti-Lag: Eliminates kernel frame backlog in /dev/video2 when browser/app reads frames slower than camera produces."
+            )
+            cam_box.pack_start(row_buf, False, False, 0)
+
+            # 3. Anti-Lag: Bitrate limit
+            self.chk_cam_bitrate = Gtk.CheckButton(label="[Anti-Lag] Cap bitrate to 8 Mbps (-b 8M)")
+            self.chk_cam_bitrate.set_active(True)
+            row_bitrate = make_option_row(
+                self.chk_cam_bitrate,
+                "Anti-Lag: Prevents USB bus saturation and frame queue bloat on complex scenes."
+            )
+            cam_box.pack_start(row_bitrate, False, False, 0)
+
+            lbl_note = Gtk.Label()
+            lbl_note.set_markup("<small><i>💡 Tip: In camera mode, you can lock/turn off your phone screen manually with the power button anytime.</i></small>")
+            lbl_note.set_xalign(0)
+            cam_box.pack_start(lbl_note, False, False, 2)
+
+            notebook.append_page(cam_box, Gtk.Label(label="📷 Camera (Webcam)"))
+
+            # ================= TAB 2: SCREEN MIRROR MODE =================
+            screen_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+            screen_box.set_border_width(8)
+
+            grid_screen = Gtk.Grid(column_spacing=12, row_spacing=8)
+            screen_box.pack_start(grid_screen, False, False, 0)
+
+            # Screen Max FPS (Up to 120)
+            grid_screen.attach(Gtk.Label(label="Max Refresh Rate:", xalign=0), 0, 0, 1, 1)
+            self.combo_screen_fps = Gtk.ComboBoxText()
+            self.combo_screen_fps.append("120", "120 FPS (Matches 120Hz AMOLED)")
+            self.combo_screen_fps.append("90", "90 FPS")
+            self.combo_screen_fps.append("60", "60 FPS (Balanced)")
+            self.combo_screen_fps.append("30", "30 FPS")
+            self.combo_screen_fps.set_active(0)
+            grid_screen.attach(self.combo_screen_fps, 1, 0, 1, 1)
+
+            # Screen Max Resolution
+            grid_screen.attach(Gtk.Label(label="Max Resolution:", xalign=0), 0, 1, 1, 1)
+            self.combo_screen_res = Gtk.ComboBoxText()
+            self.combo_screen_res.append("0", "Native Full Resolution (2400x1080)")
+            self.combo_screen_res.append("1920", "Downscale to 1080p")
+            self.combo_screen_res.append("1280", "Downscale to 720p (Faster)")
+            self.combo_screen_res.set_active(0)
+            grid_screen.attach(self.combo_screen_res, 1, 1, 1, 1)
+
+            # Screen Basic options
+            self.chk_screen_stay_awake = Gtk.CheckButton(label="Keep phone awake while mirroring")
+            self.chk_screen_stay_awake.set_active(True)
+            screen_box.pack_start(self.chk_screen_stay_awake, False, False, 0)
+
+            self.chk_screen_audio = Gtk.CheckButton(label="Forward phone audio to PC")
+            self.chk_screen_audio.set_active(True)
+            screen_box.pack_start(self.chk_screen_audio, False, False, 0)
+
+            self.chk_screen_v4l2 = Gtk.CheckButton(label="Also output screen to Virtual Webcam (/dev/video2)")
+            self.chk_screen_v4l2.set_active(False)
+            screen_box.pack_start(self.chk_screen_v4l2, False, False, 0)
+
+            # Anti-Lag separator for screen mirroring
+            sep_screen = Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL)
+            screen_box.pack_start(sep_screen, False, False, 4)
+
+            lbl_anti_lag_screen = Gtk.Label()
+            lbl_anti_lag_screen.set_markup("<b>⚡ Anti-Lag Settings (Hover ℹ️ for details):</b>")
+            lbl_anti_lag_screen.set_xalign(0)
+            screen_box.pack_start(lbl_anti_lag_screen, False, False, 0)
+
+            # Screen Anti-Lag: Turn screen off
+            self.chk_screen_off = Gtk.CheckButton(label="[Anti-Lag] Turn phone screen off while mirroring (--turn-screen-off)")
+            self.chk_screen_off.set_active(False)
+            row_screen_off = make_option_row(
+                self.chk_screen_off,
+                "Anti-Lag / Thermals: Saves battery and prevents heat buildup by keeping the physical phone screen dark."
+            )
+            screen_box.pack_start(row_screen_off, False, False, 0)
+
+            # Screen Anti-Lag: Zero V4L2 Buffer
+            self.chk_screen_zero_buf = Gtk.CheckButton(label="[Anti-Lag] Force zero V4L2 buffer if using virtual webcam")
+            self.chk_screen_zero_buf.set_active(True)
+            row_screen_buf = make_option_row(
+                self.chk_screen_zero_buf,
+                "Anti-Lag: Prevents frame lag accumulation when outputting screen mirror to /dev/video2."
+            )
+            screen_box.pack_start(row_screen_buf, False, False, 0)
+
+            notebook.append_page(screen_box, Gtk.Label(label="📱 Screen Mirror"))
+
+            # ================= TAB 3: VIRTUAL DISPLAY MODE =================
+            vd_scroll = Gtk.ScrolledWindow()
+            vd_scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+
+            vd_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+            vd_box.set_border_width(8)
+            vd_scroll.add(vd_box)
+
+            # Description
+            lbl_vd_desc = Gtk.Label()
+            lbl_vd_desc.set_markup(
+                "<b>🖥️ Virtual Display</b>\n"
+                "<small>Creates a new virtual screen on your phone. "
+                "Run apps independently without affecting the physical display. "
+                "Your phone screen stays free while apps run on your PC.</small>"
+            )
+            lbl_vd_desc.set_xalign(0)
+            lbl_vd_desc.set_line_wrap(True)
+            vd_box.pack_start(lbl_vd_desc, False, False, 0)
+
+            sep_vd1 = Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL)
+            vd_box.pack_start(sep_vd1, False, False, 4)
+
+            # Virtual Display Resolution
+            grid_vd = Gtk.Grid(column_spacing=12, row_spacing=8)
+            vd_box.pack_start(grid_vd, False, False, 0)
+
+            grid_vd.attach(Gtk.Label(label="Resolution:", xalign=0), 0, 0, 1, 1)
+            self.combo_vd_res = Gtk.ComboBoxText()
+            self.combo_vd_res.append("default", "Device Default (auto)")
+            self.combo_vd_res.append("1920x1080", "1920×1080 (Full HD)")
+            self.combo_vd_res.append("2560x1440", "2560×1440 (QHD)")
+            self.combo_vd_res.append("1280x720", "1280×720 (HD)")
+            self.combo_vd_res.append("1024x768", "1024×768 (4:3 Tablet)")
+            self.combo_vd_res.append("custom", "Custom (type below)")
+            self.combo_vd_res.set_active(1)
+            self.combo_vd_res.connect("changed", self.on_vd_res_changed)
+            grid_vd.attach(self.combo_vd_res, 1, 0, 1, 1)
+
+            # Custom resolution entry (hidden by default)
+            grid_vd.attach(Gtk.Label(label="Custom WxH:", xalign=0), 0, 1, 1, 1)
+            self.entry_vd_custom_res = Gtk.Entry()
+            self.entry_vd_custom_res.set_text("1920x1080")
+            self.entry_vd_custom_res.set_placeholder_text("e.g. 1920x1080")
+            self.entry_vd_custom_res.set_sensitive(False)
+            grid_vd.attach(self.entry_vd_custom_res, 1, 1, 1, 1)
+
+            # Virtual Display DPI
+            grid_vd.attach(Gtk.Label(label="DPI:", xalign=0), 0, 2, 1, 1)
+            self.combo_vd_dpi = Gtk.ComboBoxText()
+            self.combo_vd_dpi.append("default", "Device Default (auto)")
+            self.combo_vd_dpi.append("420", "420 (Recommended for FHD)")
+            self.combo_vd_dpi.append("320", "320 (Compact)")
+            self.combo_vd_dpi.append("240", "240 (Tablet-like)")
+            self.combo_vd_dpi.append("180", "180 (Desktop Mode / Ultra Compact)")
+            self.combo_vd_dpi.append("160", "160 (Maximum Desktop Area)")
+            self.combo_vd_dpi.set_active(0)
+            grid_vd.attach(self.combo_vd_dpi, 1, 2, 1, 1)
+
+            sep_vd2 = Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL)
+            vd_box.pack_start(sep_vd2, False, False, 4)
+
+            # Start App section
+            lbl_start_app = Gtk.Label()
+            lbl_start_app.set_markup("<b>📱 Launch App on Virtual Display:</b>")
+            lbl_start_app.set_xalign(0)
+            vd_box.pack_start(lbl_start_app, False, False, 0)
+
+            # App chooser combo
+            app_hbox = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+            self.combo_vd_app = Gtk.ComboBoxText()
+            self.combo_vd_app.append("none", "(None — open blank virtual display)")
+            self.combo_vd_app.append("com.android.settings", "⚙️ Settings")
+            self.combo_vd_app.append("com.android.chrome", "🌐 Chrome")
+            self.combo_vd_app.append("com.google.android.apps.messaging", "💬 Messages")
+            self.combo_vd_app.append("com.google.android.apps.photos", "📸 Photos")
+            self.combo_vd_app.append("com.google.android.apps.bard", "✨ Gemini")
+            self.combo_vd_app.append("com.google.android.youtube", "▶️ YouTube")
+            self.combo_vd_app.append("custom_pkg", "📦 Custom package name...")
+            self.combo_vd_app.set_active(0)
+            self.combo_vd_app.connect("changed", self.on_vd_app_changed)
+            app_hbox.pack_start(self.combo_vd_app, True, True, 0)
+
+            btn_reload_apps = Gtk.Button(label="🔄")
+            btn_reload_apps.set_tooltip_text("Scan device for installed apps (takes a few seconds)")
+            btn_reload_apps.connect("clicked", self.on_reload_apps_clicked)
+            app_hbox.pack_end(btn_reload_apps, False, False, 0)
+            vd_box.pack_start(app_hbox, False, False, 0)
+
+            # Custom package entry (hidden by default)
+            self.entry_vd_custom_pkg = Gtk.Entry()
+            self.entry_vd_custom_pkg.set_placeholder_text("e.g. org.mozilla.firefox or ?firefox")
+            self.entry_vd_custom_pkg.set_sensitive(False)
+            vd_box.pack_start(self.entry_vd_custom_pkg, False, False, 0)
+
+            # Force-stop before starting
+            self.chk_vd_force_stop = Gtk.CheckButton(label="Force-stop app before launching (+prefix)")
+            self.chk_vd_force_stop.set_active(False)
+            self.chk_vd_force_stop.set_tooltip_text(
+                "Kills the app before starting it on the virtual display. "
+                "Useful when the app is already running on the main screen."
+            )
+            vd_box.pack_start(self.chk_vd_force_stop, False, False, 0)
+
+            sep_vd3 = Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL)
+            vd_box.pack_start(sep_vd3, False, False, 4)
+
+            # Feature toggles
+            lbl_vd_features = Gtk.Label()
+            lbl_vd_features.set_markup("<b>⚙️ Virtual Display Options:</b>")
+            lbl_vd_features.set_xalign(0)
+            vd_box.pack_start(lbl_vd_features, False, False, 0)
+
+            # Flex Display
+            self.chk_vd_flex = Gtk.CheckButton(label="Flex Display — resize window resizes virtual screen (-x)")
+            self.chk_vd_flex.set_active(True)
+            row_flex = make_option_row(
+                self.chk_vd_flex,
+                "Flex Display: The virtual display resolution dynamically follows the scrcpy window size. "
+                "Drag to resize just like any desktop app. Recommended for productivity and desktop mode."
+            )
+            vd_box.pack_start(row_flex, False, False, 0)
+
+            # Keep Active
+            self.chk_vd_keep_active = Gtk.CheckButton(label="Keep display active (--keep-active)")
+            self.chk_vd_keep_active.set_active(True)
+            row_keep = make_option_row(
+                self.chk_vd_keep_active,
+                "Prevents the virtual display from going idle. Simulates user activity so the display stays on."
+            )
+            vd_box.pack_start(row_keep, False, False, 0)
+
+            # No system decorations
+            self.chk_vd_no_decor = Gtk.CheckButton(label="No system decorations (--no-vd-system-decorations)")
+            self.chk_vd_no_decor.set_active(False)
+            row_decor = make_option_row(
+                self.chk_vd_no_decor,
+                "Removes status bar and navigation bar from the virtual display. "
+                "Useful for a clean full-screen app experience or when using a custom launcher."
+            )
+            vd_box.pack_start(row_decor, False, False, 0)
+
+            # No destroy content
+            self.chk_vd_no_destroy = Gtk.CheckButton(label="Preserve apps on close (--no-vd-destroy-content)")
+            self.chk_vd_no_destroy.set_active(True)
+            row_destroy = make_option_row(
+                self.chk_vd_no_destroy,
+                "When the virtual display is closed, running apps move back to the main display "
+                "instead of being destroyed. Prevents data loss."
+            )
+            vd_box.pack_start(row_destroy, False, False, 0)
+
+            # Audio forwarding
+            self.chk_vd_audio = Gtk.CheckButton(label="Forward phone audio to PC (--audio-source=output)")
+            self.chk_vd_audio.set_active(True)
+            row_vd_audio = make_option_row(
+                self.chk_vd_audio,
+                "Forward audio: When enabled, all media sound produced by apps on the virtual display plays through your PC speakers. Disable if you prefer sound to remain on phone or to reduce bandwidth."
+            )
+            vd_box.pack_start(row_vd_audio, False, False, 0)
+
+            # Prevent freeze & Screen controls
+            self.chk_vd_stay_awake = Gtk.CheckButton(label="Keep device awake (--stay-awake, prevents sleep/freeze)")
+            self.chk_vd_stay_awake.set_active(True)
+            row_vd_awake = make_option_row(
+                self.chk_vd_stay_awake,
+                "Stay Awake: Keeps phone's system awake while scrcpy runs so the virtual display never sleeps or freezes."
+            )
+            vd_box.pack_start(row_vd_awake, False, False, 0)
+
+            self.chk_vd_screen_off = Gtk.CheckButton(label="Turn physical phone screen OFF (--turn-screen-off)")
+            self.chk_vd_screen_off.set_active(False)
+            row_vd_scroff = make_option_row(
+                self.chk_vd_screen_off,
+                "Turn Screen Off: Blackens the phone's physical display while leaving Android powered on and running apps smoothly. "
+                "CRITICAL: Do NOT press the phone's physical power button (which locks Android and halts rendering). "
+                "Use this software toggle or press MOD+o in scrcpy instead!"
+            )
+            vd_box.pack_start(row_vd_scroff, False, False, 0)
+
+            sep_vd4 = Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL)
+            vd_box.pack_start(sep_vd4, False, False, 4)
+
+            # Quality / Performance
+            lbl_vd_perf = Gtk.Label()
+            lbl_vd_perf.set_markup("<b>🎬 Quality / Performance:</b>")
+            lbl_vd_perf.set_xalign(0)
+            vd_box.pack_start(lbl_vd_perf, False, False, 0)
+
+            grid_vd_perf = Gtk.Grid(column_spacing=12, row_spacing=8)
+            vd_box.pack_start(grid_vd_perf, False, False, 0)
+
+            # Video codec
+            grid_vd_perf.attach(Gtk.Label(label="Video Codec:", xalign=0), 0, 0, 1, 1)
+            self.combo_vd_codec = Gtk.ComboBoxText()
+            self.combo_vd_codec.append("h264", "H.264 (Compatible)")
+            self.combo_vd_codec.append("h265", "H.265/HEVC (Better quality, less bandwidth)")
+            self.combo_vd_codec.append("av1", "AV1 (Best quality, needs modern device)")
+            self.combo_vd_codec.set_active(0)
+            grid_vd_perf.attach(self.combo_vd_codec, 1, 0, 1, 1)
+
+            # Bitrate
+            grid_vd_perf.attach(Gtk.Label(label="Bitrate:", xalign=0), 0, 1, 1, 1)
+            self.combo_vd_bitrate = Gtk.ComboBoxText()
+            self.combo_vd_bitrate.append("8M", "8 Mbps (Default)")
+            self.combo_vd_bitrate.append("16M", "16 Mbps (High Quality)")
+            self.combo_vd_bitrate.append("24M", "24 Mbps (Ultra Quality)")
+            self.combo_vd_bitrate.append("4M", "4 Mbps (Low Bandwidth)")
+            self.combo_vd_bitrate.set_active(0)
+            grid_vd_perf.attach(self.combo_vd_bitrate, 1, 1, 1, 1)
+
+            # Max FPS
+            grid_vd_perf.attach(Gtk.Label(label="Max FPS:", xalign=0), 0, 2, 1, 1)
+            self.combo_vd_fps = Gtk.ComboBoxText()
+            self.combo_vd_fps.append("0", "Unlimited")
+            self.combo_vd_fps.append("120", "120 FPS")
+            self.combo_vd_fps.append("60", "60 FPS")
+            self.combo_vd_fps.append("30", "30 FPS")
+            self.combo_vd_fps.set_active(2)
+            grid_vd_perf.attach(self.combo_vd_fps, 1, 2, 1, 1)
+
+            # ===== Desktop Mode Section =====
+            sep_vd_desktop = Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL)
+            vd_box.pack_start(sep_vd_desktop, False, False, 4)
+
+            lbl_desktop_header = Gtk.Label()
+            lbl_desktop_header.set_markup("<b>🖥️ Android Desktop Mode (via ADB):</b>")
+            lbl_desktop_header.set_xalign(0)
+            vd_box.pack_start(lbl_desktop_header, False, False, 0)
+
+            lbl_desktop_desc = Gtk.Label()
+            lbl_desktop_desc.set_markup(
+                "<small>Sets Android system flags to enable desktop UI on virtual displays. "
+                "Gives you a taskbar, windowed apps, and a full desktop experience. "
+                "Works best on Android 15+ with a low DPI (180–240).</small>"
+            )
+            lbl_desktop_desc.set_xalign(0)
+            lbl_desktop_desc.set_line_wrap(True)
+            vd_box.pack_start(lbl_desktop_desc, False, False, 0)
+
+            # Status label for desktop mode flags
+            self.lbl_desktop_status = Gtk.Label()
+            self.lbl_desktop_status.set_xalign(0)
+            self.lbl_desktop_status.set_line_wrap(True)
+            vd_box.pack_start(self.lbl_desktop_status, False, False, 4)
+
+            # Toggle buttons
+            desktop_btn_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+            vd_box.pack_start(desktop_btn_box, False, False, 0)
+
+            self.btn_desktop_enable = Gtk.Button(label="✅ Enable Desktop Mode")
+            self.btn_desktop_enable.set_tooltip_text(
+                "Sets all 4 system flags via ADB:\n"
+                "• force_desktop_mode_on_external_displays\n"
+                "• enable_freeform_support\n"
+                "• force_resizable_activities\n"
+                "• enable_non_resizable_multi_window"
+            )
+            self.btn_desktop_enable.connect("clicked", self.on_desktop_enable_clicked)
+            desktop_btn_box.pack_start(self.btn_desktop_enable, True, True, 0)
+
+            self.btn_desktop_disable = Gtk.Button(label="❌ Disable Desktop Mode")
+            self.btn_desktop_disable.connect("clicked", self.on_desktop_disable_clicked)
+            desktop_btn_box.pack_start(self.btn_desktop_disable, True, True, 0)
+
+            btn_desktop_refresh = Gtk.Button(label="🔄")
+            btn_desktop_refresh.set_tooltip_text("Refresh desktop mode status from device")
+            btn_desktop_refresh.connect("clicked", self.on_desktop_refresh_clicked)
+            desktop_btn_box.pack_end(btn_desktop_refresh, False, False, 0)
+
+            # Initial status check
+            self.update_desktop_mode_status()
+
+            lbl_vd_tip = Gtk.Label()
+            lbl_vd_tip.set_markup(
+                "<small><i>💡 Tip: Use a low DPI (180–240) for maximum screen real estate in desktop mode. "
+                "A reboot may be needed after toggling for the first time.</i></small>"
+            )
+            lbl_vd_tip.set_xalign(0)
+            lbl_vd_tip.set_line_wrap(True)
+            vd_box.pack_start(lbl_vd_tip, False, False, 2)
+
+            notebook.append_page(vd_scroll, Gtk.Label(label="🖥️ Virtual Display"))
+
+            # ================= TAB 4: SHORTCUTS & CHEAT SHEET =================
+            sc_scroll = Gtk.ScrolledWindow()
+            sc_scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+
+            sc_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+            sc_box.set_border_width(10)
+            sc_scroll.add(sc_box)
+
+            lbl_sc_title = Gtk.Label()
+            lbl_sc_title.set_markup("<b>⌨️ Keyboard & Mouse Controls Cheat Sheet</b>")
+            lbl_sc_title.set_xalign(0)
+            sc_box.pack_start(lbl_sc_title, False, False, 0)
+
+            lbl_sc_sub = Gtk.Label()
+            lbl_sc_sub.set_markup(
+                "<small>In scrcpy, <b>MOD</b> is the modifier key: <b>Left Alt</b> or <b>Left Super (Windows key)</b>.\n"
+                "These shortcuts are active whenever the scrcpy display window is focused.</small>"
+            )
+            lbl_sc_sub.set_xalign(0)
+            lbl_sc_sub.set_line_wrap(True)
+            sc_box.pack_start(lbl_sc_sub, False, False, 2)
+
+            def create_shortcut_section(title, shortcuts_list):
+                frame = Gtk.Frame()
+                frame_label = Gtk.Label()
+                frame_label.set_markup(f"<b>{title}</b>")
+                frame.set_label_widget(frame_label)
+                
+                grid = Gtk.Grid(column_spacing=14, row_spacing=5)
+                grid.set_border_width(8)
+                frame.add(grid)
+                
+                for idx, (combo, desc) in enumerate(shortcuts_list):
+                    c_lbl = Gtk.Label()
+                    c_lbl.set_markup(f"<tt><b>{combo}</b></tt>")
+                    c_lbl.set_xalign(0)
+                    grid.attach(c_lbl, 0, idx, 1, 1)
+
+                    d_lbl = Gtk.Label(label=desc)
+                    d_lbl.set_xalign(0)
+                    grid.attach(d_lbl, 1, idx, 1, 1)
+                return frame
+
+            # Universal / Window Shortcuts
+            sc_box.pack_start(create_shortcut_section(
+                "🖥️ Universal & Window Controls (Camera, Mirror, & Virtual Display)",
+                [
+                    ("MOD + f  /  F11", "Toggle fullscreen mode"),
+                    ("MOD + w  /  Double-click borders", "Resize window to remove black borders"),
+                    ("MOD + g", "Resize window to 1:1 (pixel-perfect)"),
+                    ("MOD + Left / Right", "Rotate display 90° left / right"),
+                    ("MOD + Shift + Left / Right", "Flip display horizontally (mirror effect)"),
+                    ("MOD + Shift + Up / Down", "Flip display vertically"),
+                    ("MOD + z", "Pause / freeze video stream"),
+                    ("MOD + Shift + z", "Unpause / resume video stream"),
+                    ("MOD + Shift + r", "Reset video capture / encoder pipeline"),
+                    ("MOD + q", "Quit / close scrcpy"),
+                ]
+            ), False, False, 3)
+
+            # Android Navigation & Gestures
+            sc_box.pack_start(create_shortcut_section(
+                "📱 Navigation & Gestures (Mirror & Virtual Display)",
+                [
+                    ("Right-click  /  MOD + b", "BACK button"),
+                    ("Middle-click  /  MOD + h", "HOME button"),
+                    ("4th mouse click  /  MOD + s", "APP SWITCHER (Recent apps / Overview)"),
+                    ("5th mouse click  /  MOD + n", "Expand notification shade"),
+                    ("MOD + Shift + n", "Collapse notification shade"),
+                    ("MOD + m", "MENU key"),
+                    ("MOD + Up / Down", "Volume UP / DOWN"),
+                    ("Click & drag", "Touch / swipe gesture"),
+                    ("Right-click & drag", "Pinch-to-zoom simulation (relative to center)"),
+                    ("Mouse wheel scroll", "Scroll page / list"),
+                ]
+            ), False, False, 3)
+
+            # Power & Physical Display Anti-Lag
+            sc_box.pack_start(create_shortcut_section(
+                "⚡ Display, Power & Anti-Lag Controls",
+                [
+                    ("MOD + o", "Turn device screen OFF (keeps mirroring & saves battery)"),
+                    ("MOD + Shift + o", "Turn device screen back ON"),
+                    ("MOD + p", "Toggle POWER button (wake / sleep phone)"),
+                    ("Right-click (when off)", "Wake / power phone screen on"),
+                    ("MOD + r", "Rotate device orientation sensor"),
+                ]
+            ), False, False, 3)
+
+            # Clipboard & File Transfer
+            sc_box.pack_start(create_shortcut_section(
+                "📋 Clipboard & Drag-and-Drop",
+                [
+                    ("MOD + c", "Copy device clipboard to PC"),
+                    ("MOD + x", "Cut device text"),
+                    ("MOD + v", "Paste PC clipboard to device"),
+                    ("MOD + Shift + v", "Type PC clipboard text as raw keystrokes"),
+                    ("Drag-and-drop APK", "Installs APK onto phone directly"),
+                    ("Drag-and-drop files", "Pushes files to /sdcard/Download/"),
+                ]
+            ), False, False, 3)
+
+            notebook.append_page(sc_scroll, Gtk.Label(label="⌨️ Shortcuts"))
+
+            self.notebook = notebook
+
+            # Bottom Status & Launch / Stop Controls
+            self.status_label = Gtk.Label(label="Ready.")
+            self.status_label.set_xalign(0)
+            vbox.pack_start(self.status_label, False, False, 0)
+
+            btn_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
+            vbox.pack_start(btn_box, False, False, 0)
+
+            self.btn_launch = Gtk.Button(label="🚀 Start Scrcpy")
+            self.btn_launch.connect("clicked", self.on_launch_clicked)
+            btn_box.pack_start(self.btn_launch, True, True, 0)
+
+            self.btn_stop = Gtk.Button(label="⏹ Stop")
+            self.btn_stop.set_sensitive(False)
+            self.btn_stop.connect("clicked", self.on_stop_clicked)
+            btn_box.pack_start(self.btn_stop, False, False, 0)
+
+            self.connect("destroy", self.on_destroy)
+            self.refresh_devices()
+
+            # Poll process status every second
+            GLib.timeout_add(1000, self.check_process_status)
+
+        def refresh_devices(self, widget=None):
+            devices = get_connected_devices()
+            if devices:
+                self.dev_label.set_markup(f"<b>Device:</b> <span color='green'>{devices[0]} (Connected)</span>")
+                self.btn_launch.set_sensitive(not self.manager.is_running())
+            else:
+                self.dev_label.set_markup("<b>Device:</b> <span color='red'>No ADB device detected</span>")
+                self.btn_launch.set_sensitive(False)
+
+        def populate_cameras(self):
+            """Populate the camera ComboBox with available camera IDs from scrcpy."""
+            try:
+                result = subprocess.run(
+                    ["scrcpy", "--list-cameras"],
+                    stdout=subprocess.PIPE,
+                    text=True,
+                    check=True,
+                )
+                lines = result.stdout.splitlines()
+            except Exception:
+                lines = []
+
+            # Clear existing entries
+            self.combo_cam.remove_all()
+            for line in lines:
+                line = line.strip()
+                if line.startswith("--camera-id="):
+                    parts = line.split()
+                    cam_id = parts[0].split("=")[1]
+                    desc = ""
+                    if "(" in line and ")" in line:
+                        desc = line[line.find("(")+1:line.find(")")]
+                    label = f"Camera {cam_id} ({desc})" if desc else f"Camera {cam_id}"
+                    self.combo_cam.append(cam_id, label)
+
+            # Fallback defaults if none detected
+            if self.combo_cam.get_model() is None or len(self.combo_cam.get_model()) == 0:
+                self.combo_cam.append("0", "Back Camera (id 0)")
+                self.combo_cam.append("1", "Front Camera (id 1)")
+
+            # Select first entry by default
+            if self.combo_cam.get_active_id() is None:
+                self.combo_cam.set_active(0)
+
+        def on_vd_res_changed(self, combo):
+            """Toggle custom resolution entry visibility."""
+            self.entry_vd_custom_res.set_sensitive(combo.get_active_id() == "custom")
+
+        def on_vd_app_changed(self, combo):
+            """Toggle custom package entry visibility."""
+            self.entry_vd_custom_pkg.set_sensitive(combo.get_active_id() == "custom_pkg")
+
+        def on_reload_apps_clicked(self, widget):
+            """Scan device for installed apps and populate the combo."""
+            self.status_label.set_text("Scanning device apps... (this may take a few seconds)")
+            # Run in a thread-safe manner using GLib.idle_add
+            while Gtk.events_pending():
+                Gtk.main_iteration()
+
+            apps = get_installed_apps()
+            if apps:
+                # Preserve special entries
+                self.combo_vd_app.remove_all()
+                self.combo_vd_app.append("none", "(None — open blank virtual display)")
+                for app_name, pkg in sorted(apps, key=lambda x: x[0]):
+                    self.combo_vd_app.append(pkg, f"{app_name} ({pkg})")
+                self.combo_vd_app.append("custom_pkg", "📦 Custom package name...")
+                self.combo_vd_app.set_active(0)
+                self.status_label.set_text(f"Found {len(apps)} apps on device.")
+            else:
+                self.status_label.set_text("Could not retrieve apps. Is the device connected?")
+
+        def update_desktop_mode_status(self):
+            """Check device for desktop flags and update UI label."""
+            status = get_desktop_mode_status()
+            lines = []
+            all_enabled = True
+            for flag, desc in DESKTOP_MODE_FLAGS:
+                val = status.get(flag, False)
+                if not val:
+                    all_enabled = False
+                icon = "🟢 ON " if val else "🔴 OFF"
+                lines.append(f"<tt>{icon}</tt> <small>{desc}</small>")
+            summary = "<span color='green'><b>Desktop Mode: Fully Enabled</b></span>" if all_enabled else "<span color='#d97706'><b>Desktop Mode: Partially or Not Enabled</b></span>"
+            self.lbl_desktop_status.set_markup(f"{summary}\n" + "\n".join(lines))
+
+        def on_desktop_enable_clicked(self, widget):
+            self.status_label.set_text("Enabling desktop mode flags via ADB...")
+            success, msg = set_desktop_mode(True)
+            self.update_desktop_mode_status()
+            self.status_label.set_text(msg)
+
+        def on_desktop_disable_clicked(self, widget):
+            self.status_label.set_text("Disabling desktop mode flags via ADB...")
+            success, msg = set_desktop_mode(False)
+            self.update_desktop_mode_status()
+            self.status_label.set_text(msg)
+
+        def on_desktop_refresh_clicked(self, widget):
+            self.update_desktop_mode_status()
+            self.status_label.set_text("Refreshed desktop mode status.")
+
+        def on_launch_clicked(self, widget):
+            current_page = self.notebook.get_current_page()
+            cmd = ["scrcpy"]
+
+            if current_page == 0:
+                # Camera Mode
+                cmd.append("--video-source=camera")
+                cam_id = self.combo_cam.get_active_id()
+                cmd.append(f"--camera-id={cam_id}")
+
+                res = self.combo_cam_res.get_active_id()
+                cmd.append(f"--camera-size={res}")
+
+                fps = self.combo_cam_fps.get_active_id()
+                cmd.append(f"--camera-fps={fps}")
+
+                # Optional Anti-Lag: Bitrate limit
+                if self.chk_cam_bitrate.get_active():
+                    cmd.append("--video-bit-rate=8M")
+
+                # Optional Anti-Lag: Zero buffer for V4L2
+                if self.chk_cam_zero_buf.get_active():
+                    cmd.append("--v4l2-buffer=0")
+
+                # V4L2 sink
+                if self.chk_cam_v4l2.get_active():
+                    dev = self.entry_v4l2.get_text().strip() or "/dev/video2"
+                    cmd.append(f"--v4l2-sink={dev}")
+
+                # Desktop preview
+                if not self.chk_cam_preview.get_active():
+                    cmd.append("--no-video-playback")
+
+                # Optional Anti-Lag: Disable audio
+                if self.chk_cam_no_audio.get_active():
+                    cmd.append("--no-audio")
+
+            elif current_page == 1:
+                # Screen Mirror Mode
+                fps = self.combo_screen_fps.get_active_id()
+                cmd.append(f"--max-fps={fps}")
+
+                res = self.combo_screen_res.get_active_id()
+                if res != "0":
+                    cmd.append(f"-m{res}")
+
+                if self.chk_screen_stay_awake.get_active():
+                    cmd.append("--stay-awake")
+
+                # Optional Anti-Lag: Screen off
+                if self.chk_screen_off.get_active():
+                    cmd.append("--turn-screen-off")
+
+                # Audio handling for screen mirroring
+                if self.chk_screen_audio.get_active():
+                    cmd.append("--audio-source=output")
+                else:
+                    cmd.append("--no-audio")
+
+                if self.chk_screen_v4l2.get_active():
+                    dev = self.entry_v4l2.get_text().strip() or "/dev/video2"
+                    cmd.append(f"--v4l2-sink={dev}")
+                    if self.chk_screen_zero_buf.get_active():
+                        cmd.append("--v4l2-buffer=0")
+
+            elif current_page == 2:
+                # Virtual Display Mode
+                vd_res = self.combo_vd_res.get_active_id()
+                vd_dpi = self.combo_vd_dpi.get_active_id()
+
+                # Build --new-display argument
+                if vd_res == "default" and vd_dpi == "default":
+                    cmd.append("--new-display")
+                elif vd_res == "custom":
+                    custom = self.entry_vd_custom_res.get_text().strip() or "1920x1080"
+                    if vd_dpi != "default":
+                        cmd.append(f"--new-display={custom}/{vd_dpi}")
+                    else:
+                        cmd.append(f"--new-display={custom}")
+                elif vd_res == "default" and vd_dpi != "default":
+                    cmd.append(f"--new-display=/{vd_dpi}")
+                else:
+                    if vd_dpi != "default":
+                        cmd.append(f"--new-display={vd_res}/{vd_dpi}")
+                    else:
+                        cmd.append(f"--new-display={vd_res}")
+
+                # Flex display
+                if self.chk_vd_flex.get_active():
+                    cmd.append("--flex-display")
+
+                # Start app
+                app_id = self.combo_vd_app.get_active_id()
+                if app_id and app_id not in ("none", "custom_pkg"):
+                    prefix = "+" if self.chk_vd_force_stop.get_active() else ""
+                    cmd.append(f"--start-app={prefix}{app_id}")
+                elif app_id == "custom_pkg":
+                    custom_pkg = self.entry_vd_custom_pkg.get_text().strip()
+                    if custom_pkg:
+                        prefix = "+" if self.chk_vd_force_stop.get_active() else ""
+                        cmd.append(f"--start-app={prefix}{custom_pkg}")
+
+                # Keep active
+                if self.chk_vd_keep_active.get_active():
+                    cmd.append("--keep-active")
+
+                # No system decorations
+                if self.chk_vd_no_decor.get_active():
+                    cmd.append("--no-vd-system-decorations")
+
+                # No destroy content
+                if self.chk_vd_no_destroy.get_active():
+                    cmd.append("--no-vd-destroy-content")
+
+                # Audio
+                if self.chk_vd_audio.get_active():
+                    cmd.append("--audio-source=output")
+                else:
+                    cmd.append("--no-audio")
+
+                # Stay awake & Screen off (prevents freeze)
+                if self.chk_vd_stay_awake.get_active():
+                    cmd.append("--stay-awake")
+
+                if self.chk_vd_screen_off.get_active():
+                    cmd.append("--turn-screen-off")
+
+                # Video codec
+                codec = self.combo_vd_codec.get_active_id()
+                if codec != "h264":
+                    cmd.append(f"--video-codec={codec}")
+
+                # Bitrate
+                bitrate = self.combo_vd_bitrate.get_active_id()
+                cmd.append(f"--video-bit-rate={bitrate}")
+
+                # Max FPS
+                vd_fps = self.combo_vd_fps.get_active_id()
+                if vd_fps != "0":
+                    cmd.append(f"--max-fps={vd_fps}")
+
+            try:
+                self.manager.start(cmd)
+                self.status_label.set_text(f"Running: {' '.join(cmd)}")
+                self.btn_launch.set_sensitive(False)
+                self.btn_stop.set_sensitive(True)
+            except Exception as e:
+                self.status_label.set_text(f"Error starting: {e}")
+
+        def on_stop_clicked(self, widget):
+            self.manager.stop()
+            self.status_label.set_text("Stopped.")
+            self.btn_launch.set_sensitive(True)
+            self.btn_stop.set_sensitive(False)
+
+        def check_process_status(self):
+            if not self.manager.is_running() and self.btn_stop.get_sensitive():
+                self.status_label.set_text("Scrcpy stopped.")
+                self.btn_launch.set_sensitive(len(get_connected_devices()) > 0)
+                self.btn_stop.set_sensitive(False)
+            return True
+
+        def on_destroy(self, widget):
+            self.manager.stop()
+            Gtk.main_quit()
+
+
+def cli_menu():
+    print("\n=== Scrcpy Terminal Quick Menu ===")
+    devices = get_connected_devices()
+    if not devices:
+        print("❌ No ADB device found. Connect your phone with USB debugging enabled.")
+        sys.exit(1)
+    print(f"✔ Device connected: {devices[0]}")
+    print("\nSelect Configuration:")
+    print(" ── Camera Modes ──")
+    print("  1) 📷 Camera 1080p @ 30fps + Anti-Lag (No Audio, Zero Buffer, 8M Bitrate)")
+    print("  2) 📷 Camera 1080p @ 60fps + Anti-Lag (No Audio, Zero Buffer, 8M Bitrate)")
+    print("  3) 📷 Camera 1080p @ 30fps (Default / Standard - Anti-Lag OFF)")
+    print("  4) 📷 Camera 1080p @ 60fps (Default / Standard - Anti-Lag OFF)")
+    print(" ── Screen Mirror Modes ──")
+    print("  5) 📱 Screen Mirror -> 120 FPS Native")
+    print("  6) 📱 Screen Mirror -> 60 FPS")
+    print("  7) 📱 Screen Mirror -> Output to Webcam (/dev/video2)")
+    print(" ── Virtual Display Modes ──")
+    print("  8) 🖥️  Virtual Display — 1080p Flex + Audio (Blank)")
+    print("  9) 🖥️  Virtual Display — 1080p Flex + Chrome")
+    print(" 10) 🖥️  Virtual Display — Desktop Mode (1080p, 180 DPI, Flex)")
+    print(" 11) 🖥️  Virtual Display — Custom (interactive)")
+    print(" ── Settings & Reference ──")
+    print(" 12) ⚙️  Toggle Android Desktop Mode via ADB (Enable/Disable)")
+    print(" 13) ⌨️  View Keyboard & Mouse Shortcuts Cheat Sheet")
+    print("  0) Exit")
+
+    choice = input("\nEnter choice [0-13]: ").strip()
+    if choice == "1":
+        cmd = "scrcpy --video-source=camera --camera-size=1920x1080 --camera-fps=30 --video-bit-rate=8M --v4l2-buffer=0 --no-audio --v4l2-sink=/dev/video2"
+    elif choice == "2":
+        cmd = "scrcpy --video-source=camera --camera-size=1920x1080 --camera-fps=60 --video-bit-rate=8M --v4l2-buffer=0 --no-audio --v4l2-sink=/dev/video2"
+    elif choice == "3":
+        cmd = "scrcpy --video-source=camera --camera-size=1920x1080 --camera-fps=30 --v4l2-sink=/dev/video2"
+    elif choice == "4":
+        cmd = "scrcpy --video-source=camera --camera-size=1920x1080 --camera-fps=60 --v4l2-sink=/dev/video2"
+    elif choice == "5":
+        cmd = "scrcpy --max-fps=120 --stay-awake --audio-source=output"
+    elif choice == "6":
+        cmd = "scrcpy --max-fps=60 --stay-awake --audio-source=output"
+    elif choice == "7":
+        cmd = "scrcpy --max-fps=60 --v4l2-sink=/dev/video2 --audio-source=output"
+    elif choice == "8":
+        cmd = "scrcpy --new-display=1920x1080 --flex-display --keep-active --no-vd-destroy-content --audio-source=output --video-bit-rate=8M --max-fps=60"
+    elif choice == "9":
+        cmd = "scrcpy --new-display=1920x1080 --flex-display --keep-active --no-vd-destroy-content --audio-source=output --video-bit-rate=8M --max-fps=60 --start-app=com.android.chrome"
+    elif choice == "10":
+        cmd = "scrcpy --new-display=1920x1080/180 --flex-display --keep-active --no-vd-destroy-content --audio-source=output --video-bit-rate=16M --max-fps=60"
+    elif choice == "11":
+        cmd = cli_custom_virtual_display()
+        if not cmd:
+            print("Cancelled.")
+            sys.exit(0)
+    elif choice == "12":
+        cli_toggle_desktop_mode()
+        sys.exit(0)
+    elif choice == "13":
+        cli_print_shortcuts()
+        sys.exit(0)
+    else:
+        print("Exiting.")
+        sys.exit(0)
+
+    print(f"\nExecuting: {cmd}\n")
+    os.system(cmd)
+
+
+def cli_toggle_desktop_mode():
+    """Interactive CLI menu to check and toggle Android desktop mode flags."""
+    print("\n── Android Desktop Mode Settings (via ADB) ──")
+    status = get_desktop_mode_status()
+    all_enabled = True
+    for flag, desc in DESKTOP_MODE_FLAGS:
+        val = status.get(flag, False)
+        if not val:
+            all_enabled = False
+        print(f" [{'ON' if val else 'OFF'}] {desc}")
+    print(f"\nOverall Status: {'✅ FULLY ENABLED' if all_enabled else '⚠️  PARTIAL / DISABLED'}")
+    
+    try:
+        action = input("\nOptions: [1] Enable all flags  [2] Disable all flags  [Enter] Keep unchanged: ").strip()
+    except (EOFError, KeyboardInterrupt):
+        action = ""
+    if action == "1":
+        succ, msg = set_desktop_mode(True)
+        print(f"\n✔ {msg}")
+    elif action == "2":
+        succ, msg = set_desktop_mode(False)
+        print(f"\n✔ {msg}")
+    else:
+        print("No changes made.")
+
+
+def cli_print_shortcuts():
+    """Print complete keyboard & mouse shortcuts cheat-sheet to the terminal."""
+    print("\n" + "="*65)
+    print("   ⌨️  SCRCPY KEYBOARD & MOUSE CONTROLS CHEAT SHEET")
+    print("="*65)
+    print("Note: 'MOD' is the shortcut modifier key (Left Alt or Left Super/Win)\n")
+    print("── 🖥️ Universal & Window Controls (Camera, Mirror & Virtual Display) ──")
+    print("  MOD + f  or  F11           Toggle fullscreen mode")
+    print("  MOD + w  or  Double-click  Resize window to remove black borders")
+    print("  MOD + g                    Resize window to 1:1 pixel-perfect")
+    print("  MOD + Left / Right         Rotate display 90° left / right")
+    print("  MOD + Shift + Left/Right   Flip display horizontally (mirror effect)")
+    print("  MOD + Shift + Up/Down      Flip display vertically")
+    print("  MOD + z                    Pause / freeze video stream")
+    print("  MOD + Shift + z            Resume / unpause video stream")
+    print("  MOD + Shift + r            Reset video capture & encoder pipeline")
+    print("  MOD + q                    Quit scrcpy")
+    print("\n── 📱 Navigation & Gestures (Mirror & Virtual Display) ──")
+    print("  Right-click  or  MOD + b   BACK")
+    print("  Middle-click or  MOD + h   HOME")
+    print("  4th-click    or  MOD + s   APP SWITCHER (Recent apps)")
+    print("  5th-click    or  MOD + n   Expand notification panel")
+    print("  MOD + Shift + n            Collapse notification panel")
+    print("  MOD + m                    MENU")
+    print("  MOD + Up / Down            Volume UP / DOWN")
+    print("  Click & drag               Touch / swipe gesture")
+    print("  Right-click & drag         Pinch-to-zoom simulation")
+    print("  Mouse wheel                Scroll list / webpage")
+    print("\n── ⚡ Power, Screen & Anti-Lag ──")
+    print("  MOD + o                    Turn phone screen OFF (saves battery & heat)")
+    print("  MOD + Shift + o            Turn phone screen back ON")
+    print("  MOD + p                    Power key (wake/sleep phone)")
+    print("  Right-click (when screen off) Wake screen on")
+    print("  MOD + r                    Rotate phone device orientation")
+    print("\n── 📋 Clipboard & Drag-and-Drop ──")
+    print("  MOD + c                    Copy device clipboard to PC")
+    print("  MOD + x                    Cut device text to PC")
+    print("  MOD + v                    Paste PC clipboard to device")
+    print("  MOD + Shift + v            Type PC clipboard as raw keystrokes")
+    print("  Drag & drop APK            Install APK onto phone directly")
+    print("  Drag & drop files          Push files to /sdcard/Download/")
+    print("="*65 + "\n")
+
+
+def cli_custom_virtual_display():
+    """Interactive builder for a custom virtual display command."""
+    print("\n── Custom Virtual Display Builder ──")
+
+    # Resolution
+    print("\nResolution:")
+    print("  1) 1920x1080 (Full HD)")
+    print("  2) 2560x1440 (QHD)")
+    print("  3) 1280x720 (HD)")
+    print("  4) 1024x768 (4:3 Tablet)")
+    print("  5) Device Default")
+    print("  6) Custom")
+    r = input("Choice [1]: ").strip() or "1"
+    res_map = {"1": "1920x1080", "2": "2560x1440", "3": "1280x720", "4": "1024x768", "5": "", "6": ""}
+    if r == "6":
+        res = input("Enter WxH (e.g. 1920x1080): ").strip()
+    else:
+        res = res_map.get(r, "1920x1080")
+
+    # DPI
+    print("\nDPI:")
+    print("  1) Device Default")
+    print("  2) 420 (Recommended for FHD)")
+    print("  3) 320 (Compact)")
+    print("  4) 240 (Tablet-like)")
+    print("  5) 180 (Desktop Mode)")
+    d = input("Choice [1]: ").strip() or "1"
+    dpi_map = {"1": "", "2": "420", "3": "320", "4": "240", "5": "180"}
+    dpi = dpi_map.get(d, "")
+
+    # Build new-display arg
+    if res and dpi:
+        nd = f"--new-display={res}/{dpi}"
+    elif res:
+        nd = f"--new-display={res}"
+    elif dpi:
+        nd = f"--new-display=/{dpi}"
+    else:
+        nd = "--new-display"
+
+    parts = ["scrcpy", nd]
+
+    # Flex display
+    flex = input("\nEnable Flex Display (resizable window)? [Y/n]: ").strip().lower()
+    if flex != "n":
+        parts.append("--flex-display")
+
+    # Start app
+    app = input("Start an app? Enter package name, '?' to search, or press Enter to skip: ").strip()
+    if app:
+        force = input("  Force-stop app first? [y/N]: ").strip().lower()
+        prefix = "+" if force == "y" else ""
+        parts.append(f"--start-app={prefix}{app}")
+
+    # Keep active
+    keep = input("Keep display active? [Y/n]: ").strip().lower()
+    if keep != "n":
+        parts.append("--keep-active")
+
+    # No destroy content
+    preserve = input("Preserve apps on close (move to main display)? [Y/n]: ").strip().lower()
+    if preserve != "n":
+        parts.append("--no-vd-destroy-content")
+
+    # No system decorations
+    decor = input("Remove system decorations (status/nav bar)? [y/N]: ").strip().lower()
+    if decor == "y":
+        parts.append("--no-vd-system-decorations")
+
+    # Audio
+    audio = input("Forward audio to PC? [Y/n]: ").strip().lower()
+    if audio != "n":
+        parts.append("--audio-source=output")
+    else:
+        parts.append("--no-audio")
+
+    # Codec
+    print("\nVideo Codec:")
+    print("  1) H.264 (Compatible)")
+    print("  2) H.265/HEVC (Better quality)")
+    print("  3) AV1 (Best, needs modern device)")
+    c = input("Choice [1]: ").strip() or "1"
+    if c == "2":
+        parts.append("--video-codec=h265")
+    elif c == "3":
+        parts.append("--video-codec=av1")
+
+    # Bitrate
+    br = input("Bitrate (e.g. 8M, 16M) [8M]: ").strip() or "8M"
+    parts.append(f"--video-bit-rate={br}")
+
+    # Max FPS
+    fps = input("Max FPS (0=unlimited) [60]: ").strip() or "60"
+    if fps != "0":
+        parts.append(f"--max-fps={fps}")
+
+    return " ".join(parts)
+
+
+if __name__ == "__main__":
+    if GUI_AVAILABLE and "--cli" not in sys.argv:
+        app = ScrcpyGui()
+        app.show_all()
+        Gtk.main()
+    else:
+        cli_menu()

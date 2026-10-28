@@ -1,0 +1,8 @@
+[Desktop Entry]
+Name=Scrcpy – Camera / Mirror
+Comment=Camera capture & screen mirroring with scrcpy
+Exec=scrcpy-menu
+Terminal=false
+Type=Application
+Icon=camera-video
+Categories=AudioVideo;Video;
