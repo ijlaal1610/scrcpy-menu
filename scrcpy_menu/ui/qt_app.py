@@ -1194,34 +1194,92 @@ class ScrcpyMainWindow(QtWidgets.QMainWindow):
         d_layout.addWidget(btn_close)
         dlg.exec()
 
+    def _send_camera_key(self, key_str: str) -> bool:
+        """Send dynamic shortcut key to active Scrcpy Camera window via xdotool without restarting daemon."""
+        if not self.cam_proc_manager.is_running():
+            return False
+
+        mod = "Alt"
+        if "super" in self.cmb_shortcut_mod.currentText().lower():
+            mod = "Super"
+        actual_key = key_str.replace("MOD", mod)
+
+        wids = []
+        for search_args in [["--name", "Scrcpy Camera"], ["--class", "scrcpy"]]:
+            try:
+                res = subprocess.run(
+                    ["xdotool", "search"] + search_args,
+                    capture_output=True,
+                    text=True,
+                    timeout=1,
+                )
+                if res.returncode == 0 and res.stdout.strip():
+                    wids = res.stdout.strip().split()
+                    if wids:
+                        break
+            except Exception:
+                pass
+
+        if wids:
+            for wid in wids:
+                try:
+                    subprocess.run(
+                        ["xdotool", "key", "--window", wid, actual_key],
+                        capture_output=True,
+                        timeout=1,
+                    )
+                except Exception:
+                    pass
+            return True
+        return False
+
     def _on_live_toggle_torch(self):
         new_state = not self.chk_cam_torch.isChecked()
         self.chk_cam_torch.setChecked(new_state)
-        target = self._get_selected_serial()
-        if target:
-            try:
-                subprocess.run(
-                    ["adb", "-s", target, "shell", "cmd statusbar click-tile flashlight"],
-                    capture_output=True,
-                    timeout=2,
-                )
-            except Exception:
-                pass
+
+        # If camera is running, send dynamic key to window without restarting daemon
         if self.cam_proc_manager.is_running():
-            cmd = self._build_camera_command()
-            self.cam_proc_manager.stop()
-            self.cam_proc_manager.start(cmd)
+            shortcut = "MOD+t" if new_state else "MOD+Shift+t"
+            sent = self._send_camera_key(shortcut)
+            if not sent:
+                # If running in background (no preview window), toggle flashlight directly via ADB without restarting!
+                target = self._get_selected_serial()
+                if target:
+                    try:
+                        subprocess.run(
+                            ["adb", "-s", target, "shell", "cmd statusbar click-tile flashlight"],
+                            capture_output=True,
+                            timeout=2,
+                        )
+                    except Exception:
+                        pass
+        else:
+            target = self._get_selected_serial()
+            if target:
+                try:
+                    subprocess.run(
+                        ["adb", "-s", target, "shell", "cmd statusbar click-tile flashlight"],
+                        capture_output=True,
+                        timeout=2,
+                    )
+                except Exception:
+                    pass
 
     def _on_live_flip_camera(self):
         curr = self.cmb_cam_facing.currentText().strip().lower()
-        if curr == "front":
-            self.cmb_cam_facing.setCurrentText("back")
-        else:
-            self.cmb_cam_facing.setCurrentText("front")
+        new_facing = "front" if curr != "front" else "back"
+        self.cmb_cam_facing.setCurrentText(new_facing)
+        # Android Camera2 requires reopening the stream to bind to a different sensor ID
         if self.cam_proc_manager.is_running():
             cmd = self._build_camera_command()
             self.cam_proc_manager.stop()
-            self.cam_proc_manager.start(cmd)
+            success = self.cam_proc_manager.start(cmd)
+            if success:
+                self.btn_cam_action.setText("⏹ Stop Webcam Stream")
+                self.btn_cam_action.setObjectName("btn_stop")
+                self.btn_cam_action.setStyle(self.btn_cam_action.style())
+                self.lbl_cam_status.setText("Status: 🟢 Streaming")
+                self.lbl_cam_status.setStyleSheet("color: #10b981; font-weight: bold;")
 
     def _on_live_zoom_in(self):
         curr_str = self.cmb_cam_zoom.currentText().split()[0].replace("x", "").strip()
@@ -1231,10 +1289,10 @@ class ScrcpyMainWindow(QtWidgets.QMainWindow):
             val = 1.0
         val = round(min(val + 0.5, 10.0), 1)
         self.cmb_cam_zoom.setCurrentText(f"{val}x")
+
+        # Dynamically send zoom shortcut without restarting daemon
         if self.cam_proc_manager.is_running():
-            cmd = self._build_camera_command()
-            self.cam_proc_manager.stop()
-            self.cam_proc_manager.start(cmd)
+            self._send_camera_key("MOD+Up")
 
     def _on_live_zoom_out(self):
         curr_str = self.cmb_cam_zoom.currentText().split()[0].replace("x", "").strip()
@@ -1244,17 +1302,17 @@ class ScrcpyMainWindow(QtWidgets.QMainWindow):
             val = 1.0
         val = round(max(val - 0.5, 1.0), 1)
         self.cmb_cam_zoom.setCurrentText(f"{val}x" if val > 1.0 else "1.0x (Default)")
+
+        # Dynamically send zoom shortcut without restarting daemon
         if self.cam_proc_manager.is_running():
-            cmd = self._build_camera_command()
-            self.cam_proc_manager.stop()
-            self.cam_proc_manager.start(cmd)
+            self._send_camera_key("MOD+Down")
 
     def _on_live_zoom_reset(self):
         self.cmb_cam_zoom.setCurrentText("1.0x (Default)")
+        # Dynamically reset zoom without restarting daemon
         if self.cam_proc_manager.is_running():
-            cmd = self._build_camera_command()
-            self.cam_proc_manager.stop()
-            self.cam_proc_manager.start(cmd)
+            for _ in range(10):
+                self._send_camera_key("MOD+Down")
 
     # ─────────────────────────────────────────────────────────────
     # TAB 4: SHORTCUTS & LOGS
@@ -1704,8 +1762,10 @@ class ScrcpyMainWindow(QtWidgets.QMainWindow):
         # Desktop Preview Window
         if not self.chk_cam_preview.isChecked():
             cmd.append("--no-video-playback")
-        elif self.chk_cam_video_buf.isChecked():
-            cmd.append("--video-buffer=0")
+        else:
+            cmd.append("--window-title=Scrcpy Camera")
+            if self.chk_cam_video_buf.isChecked():
+                cmd.append("--video-buffer=0")
 
         # Audio
         if self.chk_cam_no_audio.isChecked():
@@ -1758,6 +1818,8 @@ class ScrcpyMainWindow(QtWidgets.QMainWindow):
 
     @Slot(int)
     def _on_cam_process_exited(self, return_code: int):
+        if self.cam_proc_manager.is_running():
+            return
         self.btn_cam_action.setText("🎥 Launch Webcam (Concurrent)")
         self.btn_cam_action.setObjectName("")
         self.btn_cam_action.setStyle(self.btn_cam_action.style())
@@ -1830,6 +1892,8 @@ class ScrcpyMainWindow(QtWidgets.QMainWindow):
 
     @Slot(int)
     def _on_process_exited(self, return_code: int):
+        if self.proc_manager.is_running():
+            return
         self.btn_action.setText("▶ Launch Scrcpy")
         self.btn_action.setObjectName("btn_primary")
         self.btn_action.setStyle(self.btn_action.style())
