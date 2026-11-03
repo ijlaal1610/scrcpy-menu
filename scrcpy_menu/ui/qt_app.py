@@ -1584,6 +1584,25 @@ class ScrcpyMainWindow(QtWidgets.QMainWindow):
             self.lbl_cam_status.setText("Status: Stopping...")
             self.lbl_cam_status.setStyleSheet("color: #eab308; font-weight: bold;")
         else:
+            if self.chk_cam_v4l2.isChecked():
+                sink = self.cmb_cam_sink.currentText().strip()
+                if not sink or not os.path.exists(sink):
+                    reply = QtWidgets.QMessageBox.question(
+                        self,
+                        "Virtual Webcam Sink Not Found",
+                        f"The V4L2 device node '{sink or 'none'}' does not exist on your system.\n\n"
+                        "To use your phone as a virtual webcam for Zoom/OBS/Meet, load the v4l2loopback module:\n"
+                        "  sudo modprobe v4l2loopback video_nr=2 card_label=\"Scrcpy Virtual Camera\" exclusive_caps=1\n\n"
+                        "Would you like to turn off V4L2 Sink and open desktop preview instead?",
+                        QtWidgets.QMessageBox.StandardButton.Yes | QtWidgets.QMessageBox.StandardButton.Cancel,
+                        QtWidgets.QMessageBox.StandardButton.Yes,
+                    )
+                    if reply == QtWidgets.QMessageBox.StandardButton.Yes:
+                        self.chk_cam_v4l2.setChecked(False)
+                        self.chk_cam_preview.setChecked(True)
+                    else:
+                        return
+
             cmd = self._build_camera_command()
             success = self.cam_proc_manager.start(cmd)
             if success:
@@ -1629,6 +1648,24 @@ class ScrcpyMainWindow(QtWidgets.QMainWindow):
                     )
                     if reply == QtWidgets.QMessageBox.StandardButton.Yes:
                         self.chk_vd_no_decor.setChecked(False)
+                    else:
+                        return
+
+            if current_idx == 0 and self.chk_mirror_v4l2.isChecked():
+                sink = self.cmb_mirror_sink.currentText().strip()
+                if not sink or not os.path.exists(sink):
+                    reply = QtWidgets.QMessageBox.question(
+                        self,
+                        "Virtual Webcam Sink Not Found",
+                        f"The V4L2 device node '{sink or 'none'}' does not exist on your system.\n\n"
+                        "To stream screen mirror to a virtual webcam, load the v4l2loopback module:\n"
+                        "  sudo modprobe v4l2loopback video_nr=2 card_label=\"Scrcpy Virtual Camera\" exclusive_caps=1\n\n"
+                        "Would you like to turn off V4L2 Sink and mirror to screen normally?",
+                        QtWidgets.QMessageBox.StandardButton.Yes | QtWidgets.QMessageBox.StandardButton.Cancel,
+                        QtWidgets.QMessageBox.StandardButton.Yes,
+                    )
+                    if reply == QtWidgets.QMessageBox.StandardButton.Yes:
+                        self.chk_mirror_v4l2.setChecked(False)
                     else:
                         return
 
@@ -1825,9 +1862,11 @@ class ScrcpyMainWindow(QtWidgets.QMainWindow):
         self.cmb_cam_fps.setCurrentText(c.get("camera_fps", "30"))
         self.cmb_cam_bitrate.setCurrentText(c.get("camera_bitrate", "8M"))
         self.cmb_cam_facing.setCurrentText(c.get("camera_facing", "back"))
-        self.chk_cam_v4l2.setChecked(c.get("camera_v4l2", True if self.capabilities.get("has_v4l2_sink", False) else False))
         if "camera_sink" in c:
             self.cmb_cam_sink.setCurrentText(c["camera_sink"])
+        cam_sink = self.cmb_cam_sink.currentText().strip()
+        has_cam_sink = os.path.exists(cam_sink) if cam_sink else False
+        self.chk_cam_v4l2.setChecked(c.get("camera_v4l2", has_cam_sink) and has_cam_sink)
         self.chk_cam_preview.setChecked(c.get("camera_preview", True))
         self.chk_cam_no_audio.setChecked(c.get("camera_no_audio", True))
         self.chk_cam_zero_buf.setChecked(c.get("camera_zero_buf", True))

@@ -12,15 +12,24 @@ class LinuxPlatformAdapter(BasePlatformAdapter):
         return "Linux"
 
     def get_camera_sinks(self) -> List[str]:
-        """Scan /dev for available V4L2 video devices."""
+        """Scan /dev for available V4L2 video devices, prioritizing virtual loopback sinks."""
         sinks = []
+        virtual_sinks = []
+        v_path = "/sys/devices/virtual/video4linux"
+        if os.path.exists(v_path):
+            for entry in sorted(os.listdir(v_path)):
+                if entry.startswith("video") and entry[5:].isdigit():
+                    virtual_sinks.append(f"/dev/{entry}")
+
         if os.path.exists("/dev"):
             for entry in sorted(os.listdir("/dev")):
                 if entry.startswith("video") and entry[5:].isdigit():
-                    sinks.append(f"/dev/{entry}")
-        if not sinks:
-            sinks = ["/dev/video2", "/dev/video0"]
-        return sinks
+                    dev_path = f"/dev/{entry}"
+                    if dev_path not in virtual_sinks:
+                        sinks.append(dev_path)
+
+        result = virtual_sinks + sinks
+        return result
 
     def supports_v4l2_loopback(self) -> bool:
         """Check if v4l2loopback kernel module is loaded."""
