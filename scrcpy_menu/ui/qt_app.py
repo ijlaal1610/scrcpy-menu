@@ -1319,13 +1319,16 @@ class ScrcpyMainWindow(QtWidgets.QMainWindow):
         # Android Camera2 requires reopening the stream to bind to a different sensor ID
         if self.cam_proc_manager.is_running():
             cmd = self._build_camera_command()
+            self.lbl_cam_status.setText(f"Status: 🔄 Switching to {new_facing.capitalize()} lens...")
+            self.lbl_cam_status.setStyleSheet("color: #eab308; font-weight: bold;")
             self.cam_proc_manager.stop()
+            time.sleep(0.35)  # Clean teardown buffer to allow Android Camera HAL & ADB tunnel to release
             success = self.cam_proc_manager.start(cmd)
             if success:
                 self.btn_cam_action.setText("⏹ Stop Webcam Stream")
                 self.btn_cam_action.setObjectName("btn_stop")
                 self.btn_cam_action.setStyle(self.btn_cam_action.style())
-                self.lbl_cam_status.setText("Status: 🟢 Streaming")
+                self.lbl_cam_status.setText(f"Status: 🟢 Streaming ({new_facing.capitalize()} Lens)")
                 self.lbl_cam_status.setStyleSheet("color: #10b981; font-weight: bold;")
 
     def _on_live_zoom_in(self):
