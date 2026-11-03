@@ -1194,15 +1194,14 @@ class ScrcpyMainWindow(QtWidgets.QMainWindow):
         d_layout.addWidget(btn_close)
         dlg.exec()
 
-    def _send_camera_key(self, key_str: str) -> bool:
+    def _send_camera_key(self, action: str) -> bool:
         """Send dynamic shortcut key to active Scrcpy Camera window via xdotool without restarting daemon."""
         if not self.cam_proc_manager.is_running():
             return False
 
-        mod = "Alt"
+        mod_key = "Alt_L"
         if "super" in self.cmb_shortcut_mod.currentText().lower():
-            mod = "Super"
-        actual_key = key_str.replace("MOD", mod)
+            mod_key = "Super_L"
 
         wids = []
         for search_args in [["--name", "Scrcpy Camera"], ["--class", "scrcpy"]]:
@@ -1220,29 +1219,75 @@ class ScrcpyMainWindow(QtWidgets.QMainWindow):
             except Exception:
                 pass
 
-        if wids:
-            for wid in wids:
-                try:
+        if not wids:
+            return False
+
+        for wid in wids:
+            try:
+                # Sync and activate window for SDL2 focus
+                subprocess.run(["xdotool", "windowactivate", "--sync", wid], capture_output=True, timeout=1)
+
+                if action == "torch_on":
+                    # MOD + t
                     subprocess.run(
-                        ["xdotool", "key", "--window", wid, actual_key],
+                        ["xdotool", "keydown", "--window", wid, mod_key,
+                         "key", "--window", wid, "t",
+                         "keyup", "--window", wid, mod_key],
                         capture_output=True,
                         timeout=1,
                     )
-                except Exception:
-                    pass
-            return True
-        return False
+                elif action == "torch_off":
+                    # MOD + Shift + t
+                    subprocess.run(
+                        ["xdotool", "keydown", "--window", wid, mod_key,
+                         "keydown", "--window", wid, "Shift_L",
+                         "key", "--window", wid, "t",
+                         "keyup", "--window", wid, "Shift_L",
+                         "keyup", "--window", wid, mod_key],
+                        capture_output=True,
+                        timeout=1,
+                    )
+                elif action == "zoom_in":
+                    # MOD + Up
+                    subprocess.run(
+                        ["xdotool", "keydown", "--window", wid, mod_key,
+                         "key", "--window", wid, "Up",
+                         "keyup", "--window", wid, mod_key],
+                        capture_output=True,
+                        timeout=1,
+                    )
+                elif action == "zoom_out":
+                    # MOD + Down
+                    subprocess.run(
+                        ["xdotool", "keydown", "--window", wid, mod_key,
+                         "key", "--window", wid, "Down",
+                         "keyup", "--window", wid, mod_key],
+                        capture_output=True,
+                        timeout=1,
+                    )
+            except Exception:
+                pass
+        return True
 
     def _on_live_toggle_torch(self):
         new_state = not self.chk_cam_torch.isChecked()
         self.chk_cam_torch.setChecked(new_state)
 
+        facing = self.cmb_cam_facing.currentText().strip().lower()
+        if facing == "front":
+            self.lbl_cam_status.setText("Status: ⚠️ Front lens has no flash")
+            self.lbl_cam_status.setStyleSheet("color: #f59e0b; font-weight: bold;")
+            return
+
         # If camera is running, send dynamic key to window without restarting daemon
         if self.cam_proc_manager.is_running():
-            shortcut = "MOD+t" if new_state else "MOD+Shift+t"
-            sent = self._send_camera_key(shortcut)
-            if not sent:
-                # If running in background (no preview window), toggle flashlight directly via ADB without restarting!
+            action = "torch_on" if new_state else "torch_off"
+            sent = self._send_camera_key(action)
+            if sent:
+                self.lbl_cam_status.setText(f"Status: 🟢 Flash {'ON' if new_state else 'OFF'}")
+                self.lbl_cam_status.setStyleSheet("color: #10b981; font-weight: bold;")
+            else:
+                # No preview window active (running headless --no-video-playback)
                 target = self._get_selected_serial()
                 if target:
                     try:
@@ -1253,6 +1298,8 @@ class ScrcpyMainWindow(QtWidgets.QMainWindow):
                         )
                     except Exception:
                         pass
+                self.lbl_cam_status.setText("Status: 💡 Flash toggled (requires preview window for instant in-stream control)")
+                self.lbl_cam_status.setStyleSheet("color: #38bdf8; font-weight: bold;")
         else:
             target = self._get_selected_serial()
             if target:
@@ -1292,7 +1339,7 @@ class ScrcpyMainWindow(QtWidgets.QMainWindow):
 
         # Dynamically send zoom shortcut without restarting daemon
         if self.cam_proc_manager.is_running():
-            self._send_camera_key("MOD+Up")
+            self._send_camera_key("zoom_in")
 
     def _on_live_zoom_out(self):
         curr_str = self.cmb_cam_zoom.currentText().split()[0].replace("x", "").strip()
@@ -1305,14 +1352,14 @@ class ScrcpyMainWindow(QtWidgets.QMainWindow):
 
         # Dynamically send zoom shortcut without restarting daemon
         if self.cam_proc_manager.is_running():
-            self._send_camera_key("MOD+Down")
+            self._send_camera_key("zoom_out")
 
     def _on_live_zoom_reset(self):
         self.cmb_cam_zoom.setCurrentText("1.0x (Default)")
         # Dynamically reset zoom without restarting daemon
         if self.cam_proc_manager.is_running():
             for _ in range(10):
-                self._send_camera_key("MOD+Down")
+                self._send_camera_key("zoom_out")
 
     # ─────────────────────────────────────────────────────────────
     # TAB 4: SHORTCUTS & LOGS
