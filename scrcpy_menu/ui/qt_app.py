@@ -1023,6 +1023,28 @@ class ScrcpyMainWindow(QtWidgets.QMainWindow):
         cam_id_box.addWidget(btn_detect_cams)
         form.addRow("Camera Sensor / ID:", cam_id_box)
 
+        self.cmb_cam_ar = QtWidgets.QComboBox()
+        self.cmb_cam_ar.setEditable(True)
+        self.cmb_cam_ar.addItems(["Sensor Default (Auto)", "16:9", "4:3", "1:1"])
+        self.cmb_cam_ar.setToolTip("Capture aspect ratio (--camera-ar). 'Sensor Default' uses native camera sensor ratio.")
+        form.addRow("Aspect Ratio (--camera-ar):", self.cmb_cam_ar)
+
+        self.cmb_cam_zoom = QtWidgets.QComboBox()
+        self.cmb_cam_zoom.setEditable(True)
+        self.cmb_cam_zoom.addItems(["1.0x (Default)", "1.2x", "1.5x", "2.0x", "2.5x", "3.0x", "4.0x", "5.0x"])
+        self.cmb_cam_zoom.setToolTip("Initial camera zoom level (--camera-zoom). E.g. 1.0, 2.0")
+        form.addRow("Zoom Level (--camera-zoom):", self.cmb_cam_zoom)
+
+        self.chk_cam_torch = QtWidgets.QCheckBox("Enable camera flash / torch (--camera-torch) [works even without preview display]")
+        self.chk_cam_torch.setChecked(False)
+        self.chk_cam_torch.setToolTip("Keeps the phone's physical flash LED turned on while streaming camera, even when backgrounded.")
+        form.addRow("", self.chk_cam_torch)
+
+        self.chk_cam_high_speed = QtWidgets.QCheckBox("Enable high-speed capture mode (--camera-high-speed)")
+        self.chk_cam_high_speed.setChecked(False)
+        self.chk_cam_high_speed.setToolTip("High-speed 60fps/120fps recording mode supported by specific camera resolutions.")
+        form.addRow("", self.chk_cam_high_speed)
+
         # Virtual Webcam (V4L2) Sink Option
         sinks = self.platform_adapter.get_camera_sinks()
         v4l2_box = QtWidgets.QHBoxLayout()
@@ -1094,6 +1116,46 @@ class ScrcpyMainWindow(QtWidgets.QMainWindow):
         stream_layout.addLayout(btn_row)
 
         layout.addWidget(grp_stream)
+
+        # Live In-App Camera Remote Controls
+        grp_live = QtWidgets.QGroupBox("Live Camera In-App Remote Controls")
+        live_layout = QtWidgets.QVBoxLayout(grp_live)
+        live_layout.setSpacing(6)
+
+        live_lbl = QtWidgets.QLabel("Hardware controls that can be triggered on-the-fly while streaming or before launching:")
+        live_lbl.setStyleSheet("color: #94a3b8; font-size: 11px;")
+        live_layout.addWidget(live_lbl)
+
+        live_row1 = QtWidgets.QHBoxLayout()
+        self.btn_live_torch = QtWidgets.QPushButton("🔦 Toggle Flash / Torch")
+        self.btn_live_torch.setToolTip("Toggle device flashlight / camera torch instantly (via ADB & Scrcpy)")
+        self.btn_live_torch.clicked.connect(self._on_live_toggle_torch)
+        live_row1.addWidget(self.btn_live_torch)
+
+        self.btn_live_flip = QtWidgets.QPushButton("🔄 Flip Camera (Front / Back)")
+        self.btn_live_flip.setToolTip("Switch between front selfie lens and rear primary lens")
+        self.btn_live_flip.clicked.connect(self._on_live_flip_camera)
+        live_row1.addWidget(self.btn_live_flip)
+        live_layout.addLayout(live_row1)
+
+        live_row2 = QtWidgets.QHBoxLayout()
+        self.btn_live_zoom_out = QtWidgets.QPushButton("🔎 Zoom Out (-0.5x)")
+        self.btn_live_zoom_out.setToolTip("Decrease camera zoom")
+        self.btn_live_zoom_out.clicked.connect(self._on_live_zoom_out)
+        live_row2.addWidget(self.btn_live_zoom_out)
+
+        self.btn_live_zoom_reset = QtWidgets.QPushButton("1.0x Reset Zoom")
+        self.btn_live_zoom_reset.setToolTip("Reset camera zoom to 1.0x native")
+        self.btn_live_zoom_reset.clicked.connect(self._on_live_zoom_reset)
+        live_row2.addWidget(self.btn_live_zoom_reset)
+
+        self.btn_live_zoom_in = QtWidgets.QPushButton("🔍 Zoom In (+0.5x)")
+        self.btn_live_zoom_in.setToolTip("Increase camera zoom")
+        self.btn_live_zoom_in.clicked.connect(self._on_live_zoom_in)
+        live_row2.addWidget(self.btn_live_zoom_in)
+        live_layout.addLayout(live_row2)
+
+        layout.addWidget(grp_live)
         layout.addStretch()
 
     def _apply_cam_preset(self, res: str, fps: str, antilag: bool, bitrate: str = "8M"):
@@ -1131,6 +1193,68 @@ class ScrcpyMainWindow(QtWidgets.QMainWindow):
         btn_close.clicked.connect(dlg.accept)
         d_layout.addWidget(btn_close)
         dlg.exec()
+
+    def _on_live_toggle_torch(self):
+        new_state = not self.chk_cam_torch.isChecked()
+        self.chk_cam_torch.setChecked(new_state)
+        target = self._get_selected_serial()
+        if target:
+            try:
+                subprocess.run(
+                    ["adb", "-s", target, "shell", "cmd statusbar click-tile flashlight"],
+                    capture_output=True,
+                    timeout=2,
+                )
+            except Exception:
+                pass
+        if self.cam_proc_manager.is_running():
+            cmd = self._build_camera_command()
+            self.cam_proc_manager.stop()
+            self.cam_proc_manager.start(cmd)
+
+    def _on_live_flip_camera(self):
+        curr = self.cmb_cam_facing.currentText().strip().lower()
+        if curr == "front":
+            self.cmb_cam_facing.setCurrentText("back")
+        else:
+            self.cmb_cam_facing.setCurrentText("front")
+        if self.cam_proc_manager.is_running():
+            cmd = self._build_camera_command()
+            self.cam_proc_manager.stop()
+            self.cam_proc_manager.start(cmd)
+
+    def _on_live_zoom_in(self):
+        curr_str = self.cmb_cam_zoom.currentText().split()[0].replace("x", "").strip()
+        try:
+            val = float(curr_str)
+        except ValueError:
+            val = 1.0
+        val = round(min(val + 0.5, 10.0), 1)
+        self.cmb_cam_zoom.setCurrentText(f"{val}x")
+        if self.cam_proc_manager.is_running():
+            cmd = self._build_camera_command()
+            self.cam_proc_manager.stop()
+            self.cam_proc_manager.start(cmd)
+
+    def _on_live_zoom_out(self):
+        curr_str = self.cmb_cam_zoom.currentText().split()[0].replace("x", "").strip()
+        try:
+            val = float(curr_str)
+        except ValueError:
+            val = 1.0
+        val = round(max(val - 0.5, 1.0), 1)
+        self.cmb_cam_zoom.setCurrentText(f"{val}x" if val > 1.0 else "1.0x (Default)")
+        if self.cam_proc_manager.is_running():
+            cmd = self._build_camera_command()
+            self.cam_proc_manager.stop()
+            self.cam_proc_manager.start(cmd)
+
+    def _on_live_zoom_reset(self):
+        self.cmb_cam_zoom.setCurrentText("1.0x (Default)")
+        if self.cam_proc_manager.is_running():
+            cmd = self._build_camera_command()
+            self.cam_proc_manager.stop()
+            self.cam_proc_manager.start(cmd)
 
     # ─────────────────────────────────────────────────────────────
     # TAB 4: SHORTCUTS & LOGS
@@ -1551,6 +1675,24 @@ class ScrcpyMainWindow(QtWidgets.QMainWindow):
         if br:
             cmd.append(f"--video-bit-rate={br}")
 
+        # Aspect Ratio
+        raw_ar = self.cmb_cam_ar.currentText().split()[0].strip()
+        if raw_ar and raw_ar.lower() not in ("sensor", "auto", "default"):
+            cmd.append(f"--camera-ar={raw_ar}")
+
+        # Camera Zoom
+        raw_zoom = self.cmb_cam_zoom.currentText().split()[0].replace("x", "").strip()
+        if raw_zoom and raw_zoom not in ("1", "1.0", "default", "auto"):
+            cmd.append(f"--camera-zoom={raw_zoom}")
+
+        # Camera Torch / Flash
+        if self.chk_cam_torch.isChecked():
+            cmd.append("--camera-torch")
+
+        # High-Speed Mode
+        if self.chk_cam_high_speed.isChecked():
+            cmd.append("--camera-high-speed")
+
         # V4L2 Virtual Webcam Sink
         if self.chk_cam_v4l2.isChecked():
             sink = self.cmb_cam_sink.currentText().strip()
@@ -1872,6 +2014,10 @@ class ScrcpyMainWindow(QtWidgets.QMainWindow):
         self.chk_cam_zero_buf.setChecked(c.get("camera_zero_buf", True))
         self.chk_cam_video_buf.setChecked(c.get("camera_video_buf", c.get("camera_display_buf", True)))
         self.txt_cam_extra.setText(c.get("camera_extra", ""))
+        self.cmb_cam_ar.setCurrentText(c.get("camera_ar", "Sensor Default (Auto)"))
+        self.cmb_cam_zoom.setCurrentText(c.get("camera_zoom", "1.0x (Default)"))
+        self.chk_cam_torch.setChecked(c.get("camera_torch", False))
+        self.chk_cam_high_speed.setChecked(c.get("camera_high_speed", False))
 
         # Shortcuts MOD
         self.cmb_shortcut_mod.setCurrentText(c.get("shortcut_mod", "Default (Left Alt)"))
@@ -1940,6 +2086,10 @@ class ScrcpyMainWindow(QtWidgets.QMainWindow):
         c["camera_video_buf"] = self.chk_cam_video_buf.isChecked()
         c["camera_display_buf"] = self.chk_cam_video_buf.isChecked()
         c["camera_extra"] = self.txt_cam_extra.text().strip()
+        c["camera_ar"] = self.cmb_cam_ar.currentText()
+        c["camera_zoom"] = self.cmb_cam_zoom.currentText()
+        c["camera_torch"] = self.chk_cam_torch.isChecked()
+        c["camera_high_speed"] = self.chk_cam_high_speed.isChecked()
 
         c["shortcut_mod"] = self.cmb_shortcut_mod.currentText()
 
