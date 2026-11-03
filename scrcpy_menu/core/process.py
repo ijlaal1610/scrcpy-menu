@@ -6,6 +6,7 @@ import time
 import signal
 import threading
 import subprocess
+from pathlib import Path
 from collections import deque
 from typing import List, Callable, Optional
 
@@ -47,6 +48,17 @@ class ScrcpyProcessManager:
         self._active_cmd = list(cmd)
         self._emit_log(f"[*] Starting scrcpy: {' '.join(cmd)}\n")
 
+        env = None
+        if any(arg == "--new-display" or arg.startswith("--new-display=") for arg in cmd):
+            if getattr(sys, "frozen", False):
+                package_dir = Path(sys._MEIPASS) / "scrcpy_menu"
+            else:
+                package_dir = Path(__file__).resolve().parents[1]
+            server_path = package_dir / "resources" / "scrcpy-server"
+            if server_path.is_file():
+                env = os.environ.copy()
+                env["SCRCPY_SERVER_PATH"] = str(server_path)
+
         try:
             # We merge stderr into stdout for combined chronological logging
             self.process = subprocess.Popen(
@@ -56,7 +68,8 @@ class ScrcpyProcessManager:
                 text=True,
                 bufsize=1,  # Line-buffered
                 encoding="utf-8",
-                errors="replace"
+                errors="replace",
+                env=env,
             )
 
             # Spawn daemon thread to drain stream continuously

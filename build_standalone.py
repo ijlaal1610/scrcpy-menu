@@ -6,6 +6,7 @@ while excluding unnecessary multi-hundred-megabyte modules (QtWebEngine, Qt3D, Q
 """
 
 import sys
+import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -70,6 +71,7 @@ def build():
         "--hidden-import=scrcpy_menu.platform_adapters",
         "--hidden-import=scrcpy_menu.ui",
         "--hidden-import=scrcpy_menu.cli",
+        f"--add-data={repo_dir / 'scrcpy_menu' / 'resources' / 'scrcpy-server'}{os.pathsep}scrcpy_menu/resources",
         "--hidden-import=PySide6",
         "--hidden-import=PySide6.QtCore",
         "--hidden-import=PySide6.QtGui",

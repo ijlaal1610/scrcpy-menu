@@ -553,7 +553,7 @@ class ScrcpyMainWindow(QtWidgets.QMainWindow):
         adv_form.addRow("", self.chk_mirror_record)
 
         self.txt_mirror_extra = QtWidgets.QLineEdit()
-        self.txt_mirror_extra.setPlaceholderText("e.g. --window-title=\"Phone\" --crop=1200:1000:0:0 --display-buffer=50")
+        self.txt_mirror_extra.setPlaceholderText("e.g. --window-title=\"Phone\" --crop=1200:1000:0:0 --video-buffer=50")
         adv_form.addRow("Extra Scrcpy Flags:", self.txt_mirror_extra)
 
         layout.addWidget(grp_advanced)
@@ -764,7 +764,7 @@ class ScrcpyMainWindow(QtWidgets.QMainWindow):
         feat_form.addRow("", self.chk_vd_record)
 
         self.txt_vd_extra = QtWidgets.QLineEdit()
-        self.txt_vd_extra.setPlaceholderText("e.g. --window-title=\"Virtual Desktop\" --display-buffer=0")
+        self.txt_vd_extra.setPlaceholderText("e.g. --window-title=\"Virtual Desktop\" --video-buffer=0")
         feat_form.addRow("Extra Scrcpy Flags:", self.txt_vd_extra)
 
         layout.addWidget(grp_features)
@@ -1057,10 +1057,11 @@ class ScrcpyMainWindow(QtWidgets.QMainWindow):
         self.chk_cam_zero_buf.setToolTip("Forces v4l2loopback to drop stale frames if your browser/conferencing app reads slower than the camera produces.")
         form.addRow("", self.chk_cam_zero_buf)
 
-        self.chk_cam_display_buf = QtWidgets.QCheckBox("Zero buffer for preview window (--display-buffer=0) [instant display rendering]")
-        self.chk_cam_display_buf.setChecked(True)
-        self.chk_cam_display_buf.setToolTip("Bypasses Scrcpy's internal display frame queue for instant zero-latency preview.")
-        form.addRow("", self.chk_cam_display_buf)
+        self.chk_cam_video_buf = QtWidgets.QCheckBox("Zero buffer for preview window (--video-buffer=0) [instant display rendering]")
+        self.chk_cam_video_buf.setChecked(True)
+        self.chk_cam_video_buf.setToolTip("Bypasses Scrcpy's internal video frame queue for instant zero-latency preview.")
+        self.chk_cam_display_buf = self.chk_cam_video_buf
+        form.addRow("", self.chk_cam_video_buf)
 
         self.txt_cam_extra = QtWidgets.QLineEdit()
         self.txt_cam_extra.setPlaceholderText("e.g. --camera-ar=16:9 --camera-high-speed")
@@ -1561,8 +1562,8 @@ class ScrcpyMainWindow(QtWidgets.QMainWindow):
         # Desktop Preview Window
         if not self.chk_cam_preview.isChecked():
             cmd.append("--no-video-playback")
-        elif self.chk_cam_display_buf.isChecked():
-            cmd.append("--display-buffer=0")
+        elif self.chk_cam_video_buf.isChecked():
+            cmd.append("--video-buffer=0")
 
         # Audio
         if self.chk_cam_no_audio.isChecked():
@@ -1830,7 +1831,7 @@ class ScrcpyMainWindow(QtWidgets.QMainWindow):
         self.chk_cam_preview.setChecked(c.get("camera_preview", True))
         self.chk_cam_no_audio.setChecked(c.get("camera_no_audio", True))
         self.chk_cam_zero_buf.setChecked(c.get("camera_zero_buf", True))
-        self.chk_cam_display_buf.setChecked(c.get("camera_display_buf", True))
+        self.chk_cam_video_buf.setChecked(c.get("camera_video_buf", c.get("camera_display_buf", True)))
         self.txt_cam_extra.setText(c.get("camera_extra", ""))
 
         # Shortcuts MOD
@@ -1897,7 +1898,8 @@ class ScrcpyMainWindow(QtWidgets.QMainWindow):
         c["camera_preview"] = self.chk_cam_preview.isChecked()
         c["camera_no_audio"] = self.chk_cam_no_audio.isChecked()
         c["camera_zero_buf"] = self.chk_cam_zero_buf.isChecked()
-        c["camera_display_buf"] = self.chk_cam_display_buf.isChecked()
+        c["camera_video_buf"] = self.chk_cam_video_buf.isChecked()
+        c["camera_display_buf"] = self.chk_cam_video_buf.isChecked()
         c["camera_extra"] = self.txt_cam_extra.text().strip()
 
         c["shortcut_mod"] = self.cmb_shortcut_mod.currentText()
